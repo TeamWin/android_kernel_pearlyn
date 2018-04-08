@@ -720,9 +720,10 @@ limSendProbeRspMgmtFrame(tpAniSirGlobal pMac,
     tANI_BOOLEAN         isVHTEnabled = eANI_BOOLEAN_FALSE;
     tDot11fIEExtCap      extractedExtCap;
     tANI_BOOLEAN         extractedExtCapFlag = eANI_BOOLEAN_TRUE;
-    if(pMac->gDriverType == eDRIVER_TYPE_MFG)         // We don't answer requests
-    {
-        return;                     // in this case.
+
+    if (ANI_DRIVER_TYPE(pMac) == eDRIVER_TYPE_MFG) {
+        /* We don't answer requests in this case */
+        return;
     }
 
     if(NULL == psessionEntry)
@@ -747,12 +748,9 @@ limSendProbeRspMgmtFrame(tpAniSirGlobal pMac,
     // Timestamp to be updated by TFP, below.
 
     // Beacon Interval:
-    if(psessionEntry->limSystemRole == eLIM_AP_ROLE)
-    {
+    if (LIM_IS_AP_ROLE(psessionEntry)) {
         pFrm->BeaconInterval.interval = pMac->sch.schObject.gSchBeaconInterval;
-    }
-    else
-    {
+    } else {
         nSirStatus = wlan_cfgGetInt( pMac, WNI_CFG_BEACON_INTERVAL, &cfg);
         if (eSIR_SUCCESS != nSirStatus)
         {
@@ -773,15 +771,12 @@ limSendProbeRspMgmtFrame(tpAniSirGlobal pMac,
     PopulateDot11fIBSSParams( pMac, &pFrm->IBSSParams, psessionEntry );
 
 
-    if(psessionEntry->limSystemRole == eLIM_AP_ROLE)
-    {
+    if (LIM_IS_AP_ROLE(psessionEntry)) {
         if(psessionEntry->wps_state != SAP_WPS_DISABLED)
         {
             PopulateDot11fProbeResWPSIEs(pMac, &pFrm->WscProbeRes, psessionEntry);
         }
-    }
-    else
-    {
+    } else {
         if (wlan_cfgGetInt(pMac, (tANI_U16) WNI_CFG_WPS_ENABLE, &tmp) != eSIR_SUCCESS)
             limLog(pMac, LOGP,"Failed to cfg get id %d", WNI_CFG_WPS_ENABLE );
 
@@ -1391,8 +1386,7 @@ limSendAssocRspMgmtFrame(tpAniSirGlobal pMac,
                       pSta->supportedRates.llbRates, pSta->supportedRates.llaRates );
     }
 
-    if(psessionEntry->limSystemRole == eLIM_AP_ROLE)
-    {
+    if (LIM_IS_AP_ROLE(psessionEntry)) {
         if( pSta != NULL && eSIR_SUCCESS == statusCode )
         {
             pAssocReq =
@@ -1486,7 +1480,7 @@ limSendAssocRspMgmtFrame(tpAniSirGlobal pMac,
 
     vos_mem_set(( tANI_U8* )&beaconParams, sizeof( tUpdateBeaconParams), 0);
 
-    if( psessionEntry->limSystemRole == eLIM_AP_ROLE ){
+    if (LIM_IS_AP_ROLE(psessionEntry)) {
         if(psessionEntry->gLimProtectionControl != WNI_CFG_FORCE_POLICY_PROTECTION_DISABLE)
         limDecideApProtection(pMac, peerMacAddr, &beaconParams,psessionEntry);
     }
@@ -3056,6 +3050,16 @@ void limSendRetryReassocReqFrame(tpAniSirGlobal     pMac,
 {
     tLimMlmReassocCnf       mlmReassocCnf; // keep sme
     tLimMlmReassocReq       *pTmpMlmReassocReq = NULL;
+#ifdef FEATURE_WLAN_ESE
+    tANI_U32                val=0;
+#endif
+    if (pMlmReassocReq == NULL)
+    {
+	    limLog(pMac, LOGE,
+			    FL("Invalid pMlmReassocReq"));
+	    goto end;
+    }
+
     if(NULL == pTmpMlmReassocReq)
     {
         pTmpMlmReassocReq = vos_mem_malloc(sizeof(tLimMlmReassocReq));
@@ -3066,6 +3070,31 @@ void limSendRetryReassocReqFrame(tpAniSirGlobal     pMac,
 
     // Prepare and send Reassociation request frame
     // start reassoc timer.
+#ifdef FEATURE_WLAN_ESE
+    /*
+     * In case of Ese Reassociation, change the reassoc timer
+     * value.
+     */
+    val = pMlmReassocReq->reassocFailureTimeout;
+    if (psessionEntry->isESEconnection)
+    {
+        val = val/LIM_MAX_REASSOC_RETRY_LIMIT;
+    }
+    if (tx_timer_deactivate(&pMac->lim.limTimers.gLimReassocFailureTimer) !=
+                            TX_SUCCESS)
+    {
+        limLog(pMac, LOGP,
+               FL("unable to deactivate Reassoc failure timer"));
+    }
+    val = SYS_MS_TO_TICKS(val);
+    if (tx_timer_change(&pMac->lim.limTimers.gLimReassocFailureTimer,
+                       val, 0) != TX_SUCCESS)
+    {
+        limLog(pMac, LOGP,
+               FL("unable to change Reassociation failure timer"));
+    }
+#endif
+
     pMac->lim.limTimers.gLimReassocFailureTimer.sessionId = psessionEntry->peSessionId;
     // Start reassociation failure timer
     MTRACE(vos_trace(VOS_MODULE_ID_PE, TRACE_CODE_TIMER_ACTIVATE,
@@ -3484,7 +3513,7 @@ void
 limSendAuthMgmtFrame(tpAniSirGlobal pMac,
                      tpSirMacAuthFrameBody pAuthFrameBody,
                      tSirMacAddr           peerMacAddr,
-                     tANI_U8               wepBit,
+                     tANI_U8               wep_challenge_len,
                      tpPESession           psessionEntry,
                      tAniBool              waitForAck)
 {
@@ -3511,7 +3540,7 @@ limSendAuthMgmtFrame(tpAniSirGlobal pMac,
            pAuthFrameBody->authStatusCode,
            (pAuthFrameBody->authStatusCode == eSIR_MAC_SUCCESS_STATUS),
             MAC_ADDR_ARRAY(peerMacAddr));
-    if (wepBit == LIM_WEP_IN_FC)
+    if (wep_challenge_len)
     {
         /// Auth frame3 to be sent with encrypted framebody
         /**
@@ -3522,9 +3551,9 @@ limSendAuthMgmtFrame(tpAniSirGlobal pMac,
          * IV & ICV.
          */
 
-        frameLen = sizeof(tSirMacMgmtHdr) + LIM_ENCR_AUTH_BODY_LEN;
+        bodyLen = wep_challenge_len + LIM_ENCR_AUTH_INFO_LEN;
+        frameLen = sizeof(tSirMacMgmtHdr) + bodyLen;
 
-        bodyLen = LIM_ENCR_AUTH_BODY_LEN;
     } // if (wepBit == LIM_WEP_IN_FC)
     else
     {
@@ -3591,10 +3620,11 @@ limSendAuthMgmtFrame(tpAniSirGlobal pMac,
                      * transaction number, status code and 128 bytes
                      * for challenge text.
                      */
-
+                    bodyLen = SIR_MAC_AUTH_FRAME_INFO_LEN +
+                              SIR_MAC_SAP_AUTH_CHALLENGE_LENGTH +
+                              SIR_MAC_CHALLENGE_ID_LEN;
                     frameLen = sizeof(tSirMacMgmtHdr) +
-                               sizeof(tSirMacAuthFrame);
-                    bodyLen  = sizeof(tSirMacAuthFrameBody);
+                               bodyLen;
                 }
 
                 break;
@@ -3655,12 +3685,14 @@ limSendAuthMgmtFrame(tpAniSirGlobal pMac,
     }
 
     pMacHdr = ( tpSirMacMgmtHdr ) pFrame;
-    pMacHdr->fc.wep = wepBit;
+    if (wep_challenge_len)
+        pMacHdr->fc.wep = LIM_WEP_IN_FC;
+    else
+        pMacHdr->fc.wep = LIM_NO_WEP_IN_FC;
 
     // Prepare BSSId
-    if ((psessionEntry->limSystemRole == eLIM_AP_ROLE)||
-        (psessionEntry->limSystemRole == eLIM_BT_AMP_AP_ROLE) )
-    {
+    if (LIM_IS_AP_ROLE(psessionEntry) ||
+        LIM_IS_BT_AMP_AP_ROLE(psessionEntry)) {
         vos_mem_copy( (tANI_U8 *) pMacHdr->bssId,
                       (tANI_U8 *) psessionEntry->bssId,
                       sizeof( tSirMacAddr ));
@@ -3669,7 +3701,7 @@ limSendAuthMgmtFrame(tpAniSirGlobal pMac,
     /// Prepare Authentication frame body
     pBody    = pFrame + sizeof(tSirMacMgmtHdr);
 
-    if (wepBit == LIM_WEP_IN_FC)
+    if (wep_challenge_len)
     {
        vos_mem_copy(pBody, (tANI_U8 *) pAuthFrameBody, bodyLen);
 
@@ -3914,7 +3946,7 @@ eHalStatus limSendDisassocCnf(tpAniSirGlobal pMac)
         }
 
 #ifdef WLAN_FEATURE_VOWIFI_11R
-        if  ( (psessionEntry->limSystemRole == eLIM_STA_ROLE ) &&
+        if  (LIM_IS_STA_ROLE(psessionEntry) &&
                 (
 #ifdef FEATURE_WLAN_ESE
                 (psessionEntry->isESEconnection ) ||
@@ -3946,7 +3978,7 @@ eHalStatus limSendDisassocCnf(tpAniSirGlobal pMac)
                    " isLFR %d"
 #endif
                    " is11r %d reason %d"),
-                   psessionEntry->limSystemRole,
+                   GET_LIM_SYSTEM_ROLE(psessionEntry),
 #ifdef FEATURE_WLAN_ESE
                    psessionEntry->isESEconnection,
 #endif
@@ -5634,24 +5666,25 @@ tSirRetStatus limSendAddBARsp( tpAniSirGlobal pMac,
                 FL( "halTxFrame FAILED! Status [%d]" ),
                 halStatus );
 
-        // FIXME - HAL error codes are different from PE error
-        // codes!! And, this routine is returning tSirRetStatus
-        statusCode = eSIR_FAILURE;
-        //Pkt will be freed up by the callback
-        return statusCode;
-    }
-    else
-        return eSIR_SUCCESS;
-
-returnAfterError:
-    // Release buffer, if allocated
-    if( NULL != pAddBARspBuffer )
-         palPktFree( pMac->hHdd,
-             HAL_TXRX_FRM_802_11_MGMT,
-             (void *) pAddBARspBuffer,
-             (void *) pPacket );
-
+    // FIXME - HAL error codes are different from PE error
+    // codes!! And, this routine is returning tSirRetStatus
+    statusCode = eSIR_FAILURE;
+    //Pkt will be freed up by the callback
     return statusCode;
+   }
+   else
+      return eSIR_SUCCESS;
+
+      returnAfterError:
+
+      // Release buffer, if allocated
+      if( NULL != pAddBARspBuffer )
+        palPktFree( pMac->hHdd,
+            HAL_TXRX_FRM_802_11_MGMT,
+            (void *) pAddBARspBuffer,
+            (void *) pPacket );
+
+      return statusCode;
 }
 
 /**
@@ -5815,25 +5848,26 @@ tSirRetStatus limSendDelBAInd( tpAniSirGlobal pMac,
                             pDelBAIndBuffer, txFlag, smeSessionId);
     MTRACE(vos_trace(VOS_MODULE_ID_PE, TRACE_CODE_TX_COMPLETE,
                      psessionEntry->peSessionId, halStatus));
-    if( eHAL_STATUS_SUCCESS != halStatus )
-    {
-        PELOGE(limLog( pMac, LOGE, FL( "halTxFrame FAILED! Status [%d]" ), halStatus );)
-        statusCode = eSIR_FAILURE;
-        //Pkt will be freed up by the callback
-        return statusCode;
+   if (eHAL_STATUS_SUCCESS != halStatus )
+   {
+       PELOGE(limLog( pMac, LOGE, FL( "halTxFrame FAILED! Status [%d]" ), halStatus );)
+       statusCode = eSIR_FAILURE;
+       //Pkt will be freed up by the callback
+       return statusCode;
     }
     else
-        return eSIR_SUCCESS;
+      return eSIR_SUCCESS;
 
-returnAfterError:
-    // Release buffer, if allocated
-    if( NULL != pDelBAIndBuffer )
+      returnAfterError:
+
+      // Release buffer, if allocated
+      if( NULL != pDelBAIndBuffer )
         palPktFree( pMac->hHdd,
             HAL_TXRX_FRM_802_11_MGMT,
             (void *) pDelBAIndBuffer,
             (void *) pPacket );
 
-    return statusCode;
+      return statusCode;
 }
 
 #if defined WLAN_FEATURE_VOWIFI

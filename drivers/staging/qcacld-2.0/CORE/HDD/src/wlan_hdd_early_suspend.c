@@ -106,9 +106,9 @@
 #endif
 /* Time in msec */
 #ifdef CONFIG_SLUB_DEBUG_ON
-#define HDD_SSR_BRING_UP_TIME 20000
+#define HDD_SSR_BRING_UP_TIME 40000
 #else
-#define HDD_SSR_BRING_UP_TIME 15000
+#define HDD_SSR_BRING_UP_TIME 30000
 #endif
 
 static eHalStatus g_full_pwr_status;
@@ -1930,6 +1930,8 @@ VOS_STATUS hdd_wlan_shutdown(void)
    }
 #endif //WLAN_BTAMP_FEATURE
 
+   tl_shim_flush_cache_rx_queue();
+
    hddLog(VOS_TRACE_LEVEL_FATAL, "%s: Doing WDA STOP", __func__);
    vosStatus = WDA_stop(pVosContext, HAL_STOP_TYPE_RF_KILL);
 
@@ -2285,7 +2287,7 @@ err_vosclose:
        nl_srv_exit();
 #endif /* WLAN_KD_READY_NOTIFIER */
        /* Free up dynamically allocated members inside HDD Adapter */
-       kfree(pHddCtx->cfg_ini);
+       vos_mem_free(pHddCtx->cfg_ini);
        pHddCtx->cfg_ini= NULL;
 
        wiphy_unregister(pHddCtx->wiphy);

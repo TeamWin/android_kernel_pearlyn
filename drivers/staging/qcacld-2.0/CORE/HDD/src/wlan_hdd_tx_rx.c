@@ -267,21 +267,17 @@ void hdd_flush_ibss_tx_queues( hdd_adapter_t *pAdapter, v_U8_t STAId)
       list_for_each_safe(tmp, next, &pAdapter->wmm_tx_queue[i].anchor)
       {
          pktNode = list_entry(tmp, skb_list_node_t, anchor);
-         if (pktNode != NULL)
-         {
-            skb = pktNode->skb;
+         skb = pktNode->skb;
 
-            /* Get the STAId from data */
-            skbStaIdx = *(v_U8_t *)(((v_U8_t *)(skb->data)) - 1);
-            if (skbStaIdx == STAId)
-            {
-               /* Data for STAId is freed along with the queue node */
+         /* Get the STAId from data */
+         skbStaIdx = *(v_U8_t *)(((v_U8_t *)(skb->data)) - 1);
+         if (skbStaIdx == STAId) {
+            /* Data for STAId is freed along with the queue node */
 
-               list_del(tmp);
-               kfree_skb(skb);
+            list_del(tmp);
+            kfree_skb(skb);
 
-               pAdapter->wmm_tx_queue[i].count--;
-            }
+            pAdapter->wmm_tx_queue[i].count--;
          }
       }
 
@@ -1043,9 +1039,7 @@ VOS_STATUS hdd_Ibss_GetStaId(hdd_station_ctx_t *pHddStaCtx, v_MACADDR_t *pMacAdd
  */
 static void __hdd_tx_timeout(struct net_device *dev)
 {
-#ifdef BUILD_DEBUG_VERSION
    hdd_adapter_t *pAdapter =  WLAN_HDD_GET_PRIV_PTR(dev);
-#endif
    struct netdev_queue *txq;
    int i = 0;
 
