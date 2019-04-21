@@ -2606,7 +2606,7 @@ SYSCALL_DEFINE3(get_robust_list, int, pid,
 	}
 
 	ret = -EPERM;
-	if (!ptrace_may_access(p, PTRACE_MODE_READ))
+	if (!ptrace_may_access(p, PTRACE_MODE_READ_REALCREDS))
 		goto err_unlock;
 
 	head = p->robust_list;
@@ -2629,6 +2629,10 @@ err_unlock:
 int handle_futex_death(u32 __user *uaddr, struct task_struct *curr, int pi)
 {
 	u32 uval, uninitialized_var(nval), mval;
+
+	/* Futex address must be 32bit aligned */
+	if ((((unsigned long)uaddr) % sizeof(*uaddr)) != 0)
+		return -1;
 
 retry:
 	if (get_user(uval, uaddr))

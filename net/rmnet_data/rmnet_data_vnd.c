@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013-2014, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2013-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -555,7 +555,7 @@ int rmnet_vnd_init(void)
  *      - return code of register_netdevice() on other errors
  */
 int rmnet_vnd_create_dev(int id, struct net_device **new_device,
-			 const char *prefix)
+			 const char *prefix, int use_name)
 {
 	struct net_device *dev;
 	char dev_prefix[IFNAMSIZ];
@@ -566,12 +566,15 @@ int rmnet_vnd_create_dev(int id, struct net_device **new_device,
 		return -EINVAL;
 	}
 
-	if (!prefix)
+	if (!prefix && !use_name)
 		p = scnprintf(dev_prefix, IFNAMSIZ, "%s%%d",
 			  RMNET_DATA_DEV_NAME_STR);
+	else if (prefix && use_name)
+		p = scnprintf(dev_prefix, IFNAMSIZ, "%s", prefix);
+	else if (prefix && !use_name)
+		p = scnprintf(dev_prefix, IFNAMSIZ, "%s%%d", prefix);
 	else
-		p = scnprintf(dev_prefix, IFNAMSIZ, "%s%%d",
-			  prefix);
+		return RMNET_CONFIG_BAD_ARGUMENTS;
 	if (p >= (IFNAMSIZ-1)) {
 		LOGE("Specified prefix (%d) longer than IFNAMSIZ", p);
 		return -EINVAL;
@@ -810,7 +813,7 @@ static int _rmnet_vnd_update_flow_map(uint8_t action,
 				itm->tc_flow_valid[i] = 1;
 				itm->tc_flow_id[i] = tc_flow;
 				rc = RMNET_VND_UPDATE_FLOW_OK;
-				LOGD("{%p}->tc_flow_id[%d]=%08X",
+				LOGD("{%pK}->tc_flow_id[%d]=%08X",
 				     itm, i, tc_flow);
 				break;
 			}
@@ -826,7 +829,7 @@ static int _rmnet_vnd_update_flow_map(uint8_t action,
 					itm->tc_flow_valid[i] = 0;
 					itm->tc_flow_id[i] = 0;
 					j++;
-					LOGD("{%p}->tc_flow_id[%d]=0", itm, i);
+					LOGD("{%pK}->tc_flow_id[%d]=0", itm, i);
 				}
 			} else {
 				j++;
@@ -971,7 +974,7 @@ int rmnet_vnd_del_tc_flow(uint32_t id, uint32_t map_flow, uint32_t tc_flow)
 
 	if (r ==  RMNET_VND_UPDATE_FLOW_NO_VALID_LEFT) {
 		if (itm)
-			LOGD("Removed flow mapping [%s][0x%08X]@%p",
+			LOGD("Removed flow mapping [%s][0x%08X]@%pK",
 			     dev->name, itm->map_flow_id, itm);
 		kfree(itm);
 	}

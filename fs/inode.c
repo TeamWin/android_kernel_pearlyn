@@ -333,8 +333,10 @@ EXPORT_SYMBOL(set_nlink);
  */
 void inc_nlink(struct inode *inode)
 {
-	if (WARN_ON(inode->i_nlink == 0))
+	if (unlikely(inode->i_nlink == 0)) {
+		WARN_ON(!(inode->i_state & I_LINKABLE));
 		atomic_long_dec(&inode->i_sb->s_remove_count);
+	}
 
 	inode->__i_nlink++;
 }
@@ -1599,12 +1601,12 @@ int should_remove_suid(struct dentry *dentry)
 }
 EXPORT_SYMBOL(should_remove_suid);
 
-static int __remove_suid(struct dentry *dentry, int kill)
+static int __remove_suid(struct vfsmount *mnt, struct dentry *dentry, int kill)
 {
 	struct iattr newattrs;
 
 	newattrs.ia_valid = ATTR_FORCE | kill;
-	return notify_change(dentry, &newattrs);
+	return notify_change2(mnt, dentry, &newattrs);
 }
 
 int file_remove_suid(struct file *file)
@@ -1627,7 +1629,7 @@ int file_remove_suid(struct file *file)
 	if (killpriv)
 		error = security_inode_killpriv(dentry);
 	if (!error && killsuid)
-		error = __remove_suid(dentry, killsuid);
+		error = __remove_suid(file->f_path.mnt, dentry, killsuid);
 	if (!error && (inode->i_sb->s_flags & MS_NOSEC))
 		inode->i_flags |= S_NOSEC;
 
@@ -1825,8 +1827,14 @@ void inode_init_owner(struct inode *inode, const struct inode *dir,
 	inode->i_uid = current_fsuid();
 	if (dir && dir->i_mode & S_ISGID) {
 		inode->i_gid = dir->i_gid;
+
+		/* Directories are special, and always inherit S_ISGID */
 		if (S_ISDIR(mode))
 			mode |= S_ISGID;
+		else if ((mode & (S_ISGID | S_IXGRP)) == (S_ISGID | S_IXGRP) &&
+			 !in_group_p(inode->i_gid) &&
+			 !capable_wrt_inode_uidgid(dir, CAP_FSETID))
+			mode &= ~S_ISGID;
 	} else
 		inode->i_gid = current_fsgid();
 	inode->i_mode = mode;
@@ -1837,14 +1845,18 @@ EXPORT_SYMBOL(inode_init_owner);
  * inode_owner_or_capable - check current task permissions to inode
  * @inode: inode being checked
  *
- * Return true if current either has CAP_FOWNER to the inode, or
- * owns the file.
+ * Return true if current either has CAP_FOWNER in a namespace with the
+ * inode owner uid mapped, or owns the file.
  */
 bool inode_owner_or_capable(const struct inode *inode)
 {
+	struct user_namespace *ns;
+
 	if (uid_eq(current_fsuid(), inode->i_uid))
 		return true;
-	if (inode_capable(inode, CAP_FOWNER))
+
+	ns = current_user_ns();
+	if (ns_capable(ns, CAP_FOWNER) && kuid_has_mapping(ns, inode->i_uid))
 		return true;
 	return false;
 }

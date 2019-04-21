@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2014, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -29,6 +29,12 @@
 
 #define DRV_NAME "ipa"
 #define IPA_COOKIE 0x57831603
+#define IPA_RT_RULE_COOKIE 0x57831604
+#define IPA_RT_TBL_COOKIE 0x57831605
+#define IPA_FLT_COOKIE 0x57831606
+#define IPA_HDR_COOKIE 0x57831607
+#define IPA_PROC_HDR_COOKIE 0x57831608
+
 #define MTU_BYTE 1500
 
 #define IPA_NUM_PIPES 0x14
@@ -122,7 +128,7 @@
 
 #define IPA_HW_TABLE_ALIGNMENT(start_ofst) \
 	(((start_ofst) + 127) & ~127)
-#define IPA_RT_FLT_HW_RULE_BUF_SIZE	(128)
+#define IPA_RT_FLT_HW_RULE_BUF_SIZE	(256)
 
 /**
  * struct ipa_mem_buffer - IPA memory buffer
@@ -147,8 +153,8 @@ struct ipa_mem_buffer {
  */
 struct ipa_flt_entry {
 	struct list_head link;
-	struct ipa_flt_rule rule;
 	u32 cookie;
+	struct ipa_flt_rule rule;
 	struct ipa_flt_tbl *tbl;
 	struct ipa_rt_tbl *rt_tbl;
 	u32 hw_len;
@@ -172,13 +178,13 @@ struct ipa_flt_entry {
  */
 struct ipa_rt_tbl {
 	struct list_head link;
+	u32 cookie;
 	struct list_head head_rt_rule_list;
 	char name[IPA_RESOURCE_NAME_MAX];
 	u32 idx;
 	u32 rule_cnt;
 	u32 ref_cnt;
 	struct ipa_rt_tbl_set *set;
-	u32 cookie;
 	bool in_sys;
 	u32 sz;
 	struct ipa_mem_buffer curr_mem;
@@ -196,17 +202,19 @@ struct ipa_rt_tbl {
  * @offset_entry: entry's offset
  * @cookie: cookie used for validity check
  * @ref_cnt: reference counter of raouting table
+ * @user_deleted: is the header deleted by the user?
  */
 struct ipa_hdr_entry {
 	struct list_head link;
+	u32 cookie;
 	u8 hdr[IPA_HDR_MAX_SIZE];
 	u32 hdr_len;
 	char name[IPA_RESOURCE_NAME_MAX];
 	u8 is_partial;
 	struct ipa_hdr_offset_entry *offset_entry;
-	u32 cookie;
 	u32 ref_cnt;
 	int id;
+	bool user_deleted;
 };
 
 /**
@@ -268,8 +276,8 @@ struct ipa_flt_tbl {
  */
 struct ipa_rt_entry {
 	struct list_head link;
-	struct ipa_rt_rule rule;
 	u32 cookie;
+	struct ipa_rt_rule rule;
 	struct ipa_rt_tbl *tbl;
 	struct ipa_hdr_entry *hdr;
 	u32 hw_len;
@@ -892,8 +900,9 @@ void ipa_disable_clks(void);
 void ipa_inc_client_enable_clks(void);
 void ipa_dec_client_disable_clks(void);
 int ipa_interrupts_init(u32 ipa_irq, u32 ee, struct device *ipa_dev);
+int ipa_del_hdr_by_user(struct ipa_ioc_del_hdr *hdls, bool by_user);
 int __ipa_del_rt_rule(u32 rule_hdl);
-int __ipa_del_hdr(u32 hdr_hdl);
+int __ipa_del_hdr(u32 hdr_hdl, bool by_user);
 int __ipa_release_hdr(u32 hdr_hdl);
 int _ipa_read_gen_reg_v1_0(char *buff, int max_len);
 int _ipa_read_gen_reg_v1_1(char *buff, int max_len);

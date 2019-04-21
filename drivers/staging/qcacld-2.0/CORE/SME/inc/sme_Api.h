@@ -3871,10 +3871,6 @@ eHalStatus sme_SetBssHotlist (tHalHandle hHal,
 eHalStatus sme_ResetBssHotlist (tHalHandle hHal,
                              tSirExtScanResetBssidHotlistReqParams *pResetReq);
 
-eHalStatus
-sme_set_ssid_hotlist(tHalHandle hal,
-		     struct sir_set_ssid_hotlist_request *request);
-
 /* ---------------------------------------------------------------------------
     \fn sme_SetSignificantChange
     \brief  SME API to set significant change
@@ -3981,11 +3977,6 @@ eHalStatus sme_SetLinkLayerStatsIndCB
 );
 
 #endif /* WLAN_FEATURE_LINK_LAYER_STATS */
-
-eHalStatus sme_fw_mem_dump(tHalHandle hHal, void *recvd_req);
-eHalStatus sme_fw_mem_dump_register_cb(tHalHandle hHal,
-    void (*callback_routine)(void *cb_context, struct fw_dump_rsp *rsp));
-eHalStatus sme_fw_mem_dump_unregister_cb(tHalHandle hHal);
 
 #ifdef WLAN_FEATURE_ROAM_OFFLOAD
 /*--------------------------------------------------------------------------
@@ -4113,10 +4104,12 @@ eHalStatus sme_set_rssi_threshold_breached_cb(tHalHandle hal,
 
 eHalStatus sme_disable_non_fcc_channel(tHalHandle hHal,
 				       bool fcc_constraint);
-bool smeNeighborRoamIsHandoffInProgress(tHalHandle hHal, tANI_U8 sessionId);
+bool smeNeighborMiddleOfRoaming(tHalHandle hHal, tANI_U8 sessionId);
 
 eHalStatus sme_set_lost_link_info_cb(tHalHandle hal,
                                      void (*cb)(void *,
                                                 struct sir_lost_link_info *));
+
+eHalStatus sme_delete_all_tdls_peers(tHalHandle hal, uint8_t session_id);
 
 #endif //#if !defined( __SME_API_H )

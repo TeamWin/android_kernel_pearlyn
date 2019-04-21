@@ -422,9 +422,9 @@ void __ext4_error(struct super_block *sb, const char *function,
 	ext4_handle_error(sb);
 }
 
-void ext4_error_inode(struct inode *inode, const char *function,
-		      unsigned int line, ext4_fsblk_t block,
-		      const char *fmt, ...)
+void __ext4_error_inode(struct inode *inode, const char *function,
+			unsigned int line, ext4_fsblk_t block,
+			const char *fmt, ...)
 {
 	va_list args;
 	struct va_format vaf;
@@ -451,9 +451,9 @@ void ext4_error_inode(struct inode *inode, const char *function,
 	ext4_handle_error(inode->i_sb);
 }
 
-void ext4_error_file(struct file *file, const char *function,
-		     unsigned int line, ext4_fsblk_t block,
-		     const char *fmt, ...)
+void __ext4_error_file(struct file *file, const char *function,
+		       unsigned int line, ext4_fsblk_t block,
+		       const char *fmt, ...)
 {
 	va_list args;
 	struct va_format vaf;
@@ -580,7 +580,8 @@ void __ext4_abort(struct super_block *sb, const char *function,
 		panic("EXT4-fs panic from previous error\n");
 }
 
-void ext4_msg(struct super_block *sb, const char *prefix, const char *fmt, ...)
+void __ext4_msg(struct super_block *sb,
+		const char *prefix, const char *fmt, ...)
 {
 	struct va_format vaf;
 	va_list args;
@@ -2927,13 +2928,22 @@ static ext4_group_t ext4_has_uninit_itable(struct super_block *sb)
 	ext4_group_t group, ngroups = EXT4_SB(sb)->s_groups_count;
 	struct ext4_group_desc *gdp = NULL;
 
+	if (!ext4_has_group_desc_csum(sb))
+		return ngroups;
+
 	for (group = 0; group < ngroups; group++) {
 		gdp = ext4_get_group_desc(sb, group, NULL);
 		if (!gdp)
 			continue;
 
-		if (!(gdp->bg_flags & cpu_to_le16(EXT4_BG_INODE_ZEROED)))
+		if (gdp->bg_flags & cpu_to_le16(EXT4_BG_INODE_ZEROED))
+			continue;
+		if (group != 0)
 			break;
+		ext4_error(sb, "Inode table for bg 0 marked as "
+			   "needing zeroing");
+		if (sb->s_flags & MS_RDONLY)
+			return ngroups;
 	}
 
 	return group;
@@ -3506,7 +3516,15 @@ static int ext4_fill_super(struct super_block *sb, void *data, int silent)
 	if (blocksize < EXT4_MIN_BLOCK_SIZE ||
 	    blocksize > EXT4_MAX_BLOCK_SIZE) {
 		ext4_msg(sb, KERN_ERR,
-		       "Unsupported filesystem blocksize %d", blocksize);
+		       "Unsupported filesystem blocksize %d (%d log_block_size)",
+			 blocksize, le32_to_cpu(es->s_log_block_size));
+		goto failed_mount;
+	}
+	if (le32_to_cpu(es->s_log_block_size) >
+	    (EXT4_MAX_BLOCK_LOG_SIZE - EXT4_MIN_BLOCK_LOG_SIZE)) {
+		ext4_msg(sb, KERN_ERR,
+			 "Invalid log block size: %u",
+			 le32_to_cpu(es->s_log_block_size));
 		goto failed_mount;
 	}
 
@@ -3548,6 +3566,11 @@ static int ext4_fill_super(struct super_block *sb, void *data, int silent)
 	} else {
 		sbi->s_inode_size = le16_to_cpu(es->s_inode_size);
 		sbi->s_first_ino = le32_to_cpu(es->s_first_ino);
+		if (sbi->s_first_ino < EXT4_GOOD_OLD_FIRST_INO) {
+			ext4_msg(sb, KERN_ERR, "invalid first ino: %u",
+				 sbi->s_first_ino);
+			goto failed_mount;
+		}
 		if ((sbi->s_inode_size < EXT4_GOOD_OLD_INODE_SIZE) ||
 		    (!is_power_of_2(sbi->s_inode_size)) ||
 		    (sbi->s_inode_size > blocksize)) {
@@ -3619,6 +3642,13 @@ static int ext4_fill_super(struct super_block *sb, void *data, int silent)
 			ext4_msg(sb, KERN_ERR,
 				 "cluster size (%d) smaller than "
 				 "block size (%d)", clustersize, blocksize);
+			goto failed_mount;
+		}
+		if (le32_to_cpu(es->s_log_cluster_size) >
+		    (EXT4_MAX_CLUSTER_LOG_SIZE - EXT4_MIN_BLOCK_LOG_SIZE)) {
+			ext4_msg(sb, KERN_ERR,
+				 "Invalid log cluster size: %u",
+				 le32_to_cpu(es->s_log_cluster_size));
 			goto failed_mount;
 		}
 		sbi->s_cluster_bits = le32_to_cpu(es->s_log_cluster_size) -
@@ -4381,20 +4411,6 @@ static int ext4_commit_super(struct super_block *sb, int sync)
 
 	if (!sbh || block_device_ejected(sb))
 		return error;
-	if (buffer_write_io_error(sbh)) {
-		/*
-		 * Oh, dear.  A previous attempt to write the
-		 * superblock failed.  This could happen because the
-		 * USB device was yanked out.  Or it could happen to
-		 * be a transient write error and maybe the block will
-		 * be remapped.  Nothing we can do but to retry the
-		 * write and hope for the best.
-		 */
-		ext4_msg(sb, KERN_ERR, "previous I/O error to "
-		       "superblock detected");
-		clear_buffer_write_io_error(sbh);
-		set_buffer_uptodate(sbh);
-	}
 	/*
 	 * If the file system is mounted read-only, don't update the
 	 * superblock write time.  This avoids updating the superblock
@@ -4423,7 +4439,23 @@ static int ext4_commit_super(struct super_block *sb, int sync)
 				&EXT4_SB(sb)->s_freeinodes_counter));
 	BUFFER_TRACE(sbh, "marking dirty");
 	ext4_superblock_csum_set(sb);
+	lock_buffer(sbh);
+	if (buffer_write_io_error(sbh) || !buffer_uptodate(sbh)) {
+		/*
+		 * Oh, dear.  A previous attempt to write the
+		 * superblock failed.  This could happen because the
+		 * USB device was yanked out.  Or it could happen to
+		 * be a transient write error and maybe the block will
+		 * be remapped.  Nothing we can do but to retry the
+		 * write and hope for the best.
+		 */
+		ext4_msg(sb, KERN_ERR, "previous I/O error to "
+		       "superblock detected");
+		clear_buffer_write_io_error(sbh);
+		set_buffer_uptodate(sbh);
+	}
 	mark_buffer_dirty(sbh);
+	unlock_buffer(sbh);
 	if (sync) {
 		error = sync_dirty_buffer(sbh);
 		if (error)
@@ -4625,6 +4657,8 @@ static int ext4_remount(struct super_block *sb, int *flags, char *data)
 	int i, j;
 #endif
 	char *orig_data = kstrdup(data, GFP_KERNEL);
+
+	sync_filesystem(sb);
 
 	/* Store the original options */
 	old_sb_flags = sb->s_flags;
@@ -4979,6 +5013,20 @@ static int ext4_quota_on_mount(struct super_block *sb, int type)
 					EXT4_SB(sb)->s_jquota_fmt, type);
 }
 
+static void lockdep_set_quota_inode(struct inode *inode, int subclass)
+{
+	struct ext4_inode_info *ei = EXT4_I(inode);
+
+	/* The first argument of lockdep_set_subclass has to be
+	 * *exactly* the same as the argument to init_rwsem() --- in
+	 * this case, in init_once() --- or lockdep gets unhappy
+	 * because the name of the lock is set using the
+	 * stringification of the argument to init_rwsem().
+	 */
+	(void) ei;	/* shut up clang warning if !CONFIG_LOCKDEP */
+	lockdep_set_subclass(&ei->i_data_sem, subclass);
+}
+
 /*
  * Standard function to be called on quota_on
  */
@@ -5018,8 +5066,12 @@ static int ext4_quota_on(struct super_block *sb, int type, int format_id,
 		if (err)
 			return err;
 	}
-
-	return dquot_quota_on(sb, type, format_id, path);
+	lockdep_set_quota_inode(path->dentry->d_inode, I_DATA_SEM_QUOTA);
+	err = dquot_quota_on(sb, type, format_id, path);
+	if (err)
+		lockdep_set_quota_inode(path->dentry->d_inode,
+					     I_DATA_SEM_NORMAL);
+	return err;
 }
 
 static int ext4_quota_enable(struct super_block *sb, int type, int format_id,
@@ -5045,8 +5097,11 @@ static int ext4_quota_enable(struct super_block *sb, int type, int format_id,
 
 	/* Don't account quota for quota files to avoid recursion */
 	qf_inode->i_flags |= S_NOQUOTA;
+	lockdep_set_quota_inode(qf_inode, I_DATA_SEM_QUOTA);
 	err = dquot_enable(qf_inode, type, format_id, flags);
 	iput(qf_inode);
+	if (err)
+		lockdep_set_quota_inode(qf_inode, I_DATA_SEM_NORMAL);
 
 	return err;
 }

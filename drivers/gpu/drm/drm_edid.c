@@ -939,6 +939,36 @@ static const struct drm_display_mode edid_cea_modes[] = {
 	 .vrefresh = 100, },
 };
 
+/*
+ * HDMI 1.4 4k modes.
+ */
+static const struct drm_display_mode edid_4k_modes[] = {
+	/* 1 - 3840x2160@30Hz */
+	{ DRM_MODE("3840x2160", DRM_MODE_TYPE_DRIVER, 297000,
+		   3840, 4016, 4104, 4400, 0,
+		   2160, 2168, 2178, 2250, 0,
+		   DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC),
+	  .vrefresh = 30, },
+	/* 2 - 3840x2160@25Hz */
+	{ DRM_MODE("3840x2160", DRM_MODE_TYPE_DRIVER, 297000,
+		   3840, 4896, 4984, 5280, 0,
+		   2160, 2168, 2178, 2250, 0,
+		   DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC),
+	  .vrefresh = 25, },
+	/* 3 - 3840x2160@24Hz */
+	{ DRM_MODE("3840x2160", DRM_MODE_TYPE_DRIVER, 297000,
+		   3840, 5116, 5204, 5500, 0,
+		   2160, 2168, 2178, 2250, 0,
+		   DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC),
+	  .vrefresh = 24, },
+	/* 4 - 4096x2160@24Hz (SMPTE) */
+	{ DRM_MODE("4096x2160", DRM_MODE_TYPE_DRIVER, 297000,
+		   4096, 5116, 5204, 5500, 0,
+		   2160, 2168, 2178, 2250, 0,
+		   DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC),
+	  .vrefresh = 24, },
+};
+
 /*** DDC fetch and block validation ***/
 
 static const u8 edid_header[] = {
@@ -2303,10 +2333,10 @@ add_detailed_modes(struct drm_connector *connector, struct edid *edid,
 #define EDID_CEA_YCRCB422	(1 << 4)
 #define EDID_CEA_VCDB_QS	(1 << 6)
 
-/**
+/*
  * Search EDID for CEA extension block.
  */
-u8 *drm_find_cea_extension(struct edid *edid)
+static u8 *drm_find_cea_extension(struct edid *edid)
 {
 	u8 *edid_ext = NULL;
 	int i;
@@ -2327,7 +2357,6 @@ u8 *drm_find_cea_extension(struct edid *edid)
 
 	return edid_ext;
 }
-EXPORT_SYMBOL(drm_find_cea_extension);
 
 /**
  * drm_match_cea_mode - look for a CEA mode matching given mode
@@ -2374,10 +2403,11 @@ EXPORT_SYMBOL(drm_match_cea_mode);
 
 
 static int
-do_cea_modes (struct drm_connector *connector, u8 *db, u8 len)
+do_cea_modes(struct drm_connector *connector, const u8 *db, u8 len)
 {
 	struct drm_device *dev = connector->dev;
-	u8 * mode, cea_mode;
+	const u8 *mode;
+	u8 cea_mode;
 	int modes = 0;
 
 	for (mode = db; mode < db + len; mode++) {
@@ -2394,6 +2424,68 @@ do_cea_modes (struct drm_connector *connector, u8 *db, u8 len)
 		}
 	}
 
+	return modes;
+}
+
+/*
+ * do_hdmi_vsdb_modes - Parse the HDMI Vendor Specific data block
+ * @connector: connector corresponding to the HDMI sink
+ * @db: start of the CEA vendor specific block
+ * @len: length of the CEA block payload, ie. one can access up to db[len]
+ *
+ * Parses the HDMI VSDB looking for modes to add to @connector.
+ */
+static int
+do_hdmi_vsdb_modes(struct drm_connector *connector, const u8 *db, u8 len)
+{
+	struct drm_device *dev = connector->dev;
+	int modes = 0, offset = 0, i;
+	u8 vic_len;
+
+	if (len < 8)
+		goto out;
+
+	/* no HDMI_Video_Present */
+	if (!(db[8] & (1 << 5)))
+		goto out;
+
+	/* Latency_Fields_Present */
+	if (db[8] & (1 << 7))
+		offset += 2;
+
+	/* I_Latency_Fields_Present */
+	if (db[8] & (1 << 6))
+		offset += 2;
+
+	/* the declared length is not long enough for the 2 first bytes
+	 * of additional video format capabilities */
+	offset += 2;
+	if (len < (8 + offset))
+		goto out;
+
+	vic_len = db[8 + offset] >> 5;
+
+	for (i = 0; i < vic_len && len >= (9 + offset + i); i++) {
+		struct drm_display_mode *newmode;
+		u8 vic;
+
+		vic = db[9 + offset + i];
+
+		vic--; /* VICs start at 1 */
+		if (vic >= ARRAY_SIZE(edid_4k_modes)) {
+			DRM_ERROR("Unknown HDMI VIC: %d\n", vic);
+			continue;
+		}
+
+		newmode = drm_mode_duplicate(dev, &edid_4k_modes[vic]);
+		if (!newmode)
+			continue;
+
+		drm_mode_probed_add(connector, newmode);
+		modes++;
+	}
+
+out:
 	return modes;
 }
 
@@ -2428,14 +2520,30 @@ cea_db_offsets(const u8 *cea, int *start, int *end)
 	return 0;
 }
 
+static bool cea_db_is_hdmi_vsdb(const u8 *db)
+{
+	int hdmi_id;
+
+	if (cea_db_tag(db) != VENDOR_BLOCK)
+		return false;
+
+	if (cea_db_payload_len(db) < 5)
+		return false;
+
+	hdmi_id = db[1] | (db[2] << 8) | (db[3] << 16);
+
+	return hdmi_id == HDMI_IDENTIFIER;
+}
+
 #define for_each_cea_db(cea, i, start, end) \
 	for ((i) = (start); (i) < (end) && (i) + cea_db_payload_len(&(cea)[(i)]) < (end); (i) += cea_db_payload_len(&(cea)[(i)]) + 1)
 
 static int
 add_cea_modes(struct drm_connector *connector, struct edid *edid)
 {
-	u8 * cea = drm_find_cea_extension(edid);
-	u8 * db, dbl;
+	const u8 *cea = drm_find_cea_extension(edid);
+	const u8 *db;
+	u8 dbl;
 	int modes = 0;
 
 	if (cea && cea_revision(cea) >= 3) {
@@ -2449,7 +2557,9 @@ add_cea_modes(struct drm_connector *connector, struct edid *edid)
 			dbl = cea_db_payload_len(db);
 
 			if (cea_db_tag(db) == VIDEO_BLOCK)
-				modes += do_cea_modes (connector, db+1, dbl);
+				modes += do_cea_modes(connector, db + 1, dbl);
+			else if (cea_db_is_hdmi_vsdb(db))
+				modes += do_hdmi_vsdb_modes(connector, db, dbl);
 		}
 	}
 
@@ -2500,21 +2610,6 @@ monitor_name(struct detailed_timing *t, void *data)
 {
 	if (t->data.other_data.type == EDID_DETAIL_MONITOR_NAME)
 		*(u8 **)data = t->data.other_data.data.str.str;
-}
-
-static bool cea_db_is_hdmi_vsdb(const u8 *db)
-{
-	int hdmi_id;
-
-	if (cea_db_tag(db) != VENDOR_BLOCK)
-		return false;
-
-	if (cea_db_payload_len(db) < 5)
-		return false;
-
-	hdmi_id = db[1] | (db[2] << 8) | (db[3] << 16);
-
-	return hdmi_id == HDMI_IDENTIFIER;
 }
 
 /**
@@ -3037,10 +3132,9 @@ drm_hdmi_avi_infoframe_from_display_mode(struct hdmi_avi_infoframe *frame,
 		return err;
 
 	frame->video_code = drm_match_cea_mode(mode);
-	if (!frame->video_code)
-		return 0;
 
 	frame->picture_aspect = HDMI_PICTURE_ASPECT_NONE;
+	frame->active_info_valid = 1;
 	frame->active_aspect = HDMI_ACTIVE_ASPECT_PICTURE;
 
 	return 0;

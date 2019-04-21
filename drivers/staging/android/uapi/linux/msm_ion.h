@@ -5,8 +5,7 @@
 
 enum msm_ion_heap_types {
 	ION_HEAP_TYPE_MSM_START = ION_HEAP_TYPE_CUSTOM + 1,
-	ION_HEAP_TYPE_DMA = ION_HEAP_TYPE_MSM_START,
-	ION_HEAP_TYPE_SECURE_DMA,
+	ION_HEAP_TYPE_SECURE_DMA = ION_HEAP_TYPE_MSM_START,
 	ION_HEAP_TYPE_REMOVED,
 	/*
 	 * if you add a heap type here you should also add it to
@@ -67,7 +66,11 @@ enum cp_mem_usage {
 	UNKNOWN = 0x7FFFFFFF,
 };
 
-#define ION_HEAP_TYPE_DMA_MASK         (1 << ION_HEAP_TYPE_DMA)
+/**
+ * Flag to allow non continguous allocation of memory from secure
+ * heap
+ */
+#define ION_FLAG_ALLOW_NON_CONTIG (1 << 24)
 
 /**
  * Flag to use when allocating to indicate that a heap is secure.

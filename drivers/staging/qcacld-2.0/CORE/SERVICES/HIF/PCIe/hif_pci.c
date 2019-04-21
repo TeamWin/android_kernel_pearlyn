@@ -1741,8 +1741,9 @@ hif_send_buffer_cleanup_on_pipe(struct HIF_CE_pipe_info *pipe_info)
                 return;
             }
             /* Indicate the completion to higer layer to free the buffer */
-            hif_state->msg_callbacks_current.txCompletionHandler(
-                hif_state->msg_callbacks_current.Context, netbuf, id);
+            if (hif_state->msg_callbacks_current.txCompletionHandler)
+                hif_state->msg_callbacks_current.txCompletionHandler(
+                    hif_state->msg_callbacks_current.Context, netbuf, id);
         }
     }
 }
@@ -2281,7 +2282,7 @@ HIF_sleep_entry(void *arg)
 	struct hif_pci_softc *sc = hif_state->sc;
 	u_int32_t idle_ms;
 
-	if (vos_is_unload_in_progress(VOS_MODULE_ID_HIF, NULL))
+	if (vos_is_unload_in_progress())
 		return;
 
 	if (sc->recovery)
@@ -3356,6 +3357,24 @@ int hif_pm_runtime_prevent_suspend_timeout(void *ol_sc, unsigned int delay)
 	return ret;
 
 }
+
+/**
+ * hif_request_runtime_pm_resume() - API to do runtime resume
+ * @ol_sc: HIF context
+ *
+ * API to request runtime resume
+ *
+ * Return: void
+ */
+void hif_request_runtime_pm_resume(void *ol_sc)
+{
+	struct ol_softc *sc = (struct ol_softc *)ol_sc;
+	struct hif_pci_softc *hif_sc = sc->hif_sc;
+	struct device *dev = hif_sc->dev;
+
+	hif_pm_request_resume(dev);
+	hif_pm_runtime_mark_last_busy(dev);
+}
 #else
 int hif_pm_runtime_prevent_suspend(void *ol_sc)
 {
@@ -3371,4 +3390,34 @@ int hif_pm_runtime_prevent_suspend_timeout(void *ol_sc, unsigned int msec)
 {
 	return 0;
 }
+
+void hif_request_runtime_pm_resume(void *ol_sc)
+{
+}
 #endif
+
+/* hif_addr_in_boundary() - API to check if addr is with in PCIE BAR range
+ * @hif_device:  context of cd
+ * @offset: offset from PCI BAR mapped base address.
+ *
+ * API determines if address to be accessed is with in range or out
+ * of bound.
+ *
+ * Return: success if address is with in PCI BAR range.
+ */
+int hif_addr_in_boundary(HIF_DEVICE *hif_device, A_UINT32 offset)
+{
+	struct HIF_CE_state *hif_state;
+	struct hif_pci_softc *sc;
+
+	hif_state = (struct HIF_CE_state *)hif_device;
+	sc = hif_state->sc;
+	if (unlikely(offset + sizeof(unsigned int) > sc->mem_len)) {
+		VOS_TRACE(VOS_MODULE_ID_HIF, VOS_TRACE_LEVEL_ERROR,
+			"refusing to read mmio out of bounds at 0x%08x - 0x%08zx (max 0x%08zx)\n",
+			offset, offset + sizeof(unsigned int), sc->mem_len);
+		return -EINVAL;
+	}
+
+	return 0;
+}

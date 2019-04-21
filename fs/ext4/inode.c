@@ -3908,7 +3908,8 @@ static int __ext4_get_inode_loc(struct inode *inode,
 	int			inodes_per_block, inode_offset;
 
 	iloc->bh = NULL;
-	if (!ext4_valid_inum(sb, inode->i_ino))
+	if (inode->i_ino < EXT4_ROOT_INO ||
+	    inode->i_ino > le32_to_cpu(EXT4_SB(sb)->s_es->s_inodes_count))
 		return -EIO;
 
 	iloc->block_group = (inode->i_ino - 1) / EXT4_INODES_PER_GROUP(sb);
@@ -4147,6 +4148,12 @@ struct inode *ext4_iget(struct super_block *sb, unsigned long ino)
 	if (ret < 0)
 		goto bad_inode;
 	raw_inode = ext4_raw_inode(&iloc);
+
+	if ((ino == EXT4_ROOT_INO) && (raw_inode->i_links_count == 0)) {
+		EXT4_ERROR_INODE(inode, "root inode unallocated");
+		ret = -EIO;
+		goto bad_inode;
+	}
 
 	if (EXT4_INODE_SIZE(inode->i_sb) > EXT4_GOOD_OLD_INODE_SIZE) {
 		ei->i_extra_isize = le16_to_cpu(raw_inode->i_extra_isize);
@@ -4525,21 +4532,20 @@ out_brelse:
  *
  * We are called from a few places:
  *
- * - Within generic_file_write() for O_SYNC files.
+ * - Within generic_file_aio_write() -> generic_write_sync() for O_SYNC files.
  *   Here, there will be no transaction running. We wait for any running
  *   transaction to commit.
  *
- * - Within sys_sync(), kupdate and such.
- *   We wait on commit, if tol to.
+ * - Within flush work (sys_sync(), kupdate and such).
+ *   We wait on commit, if told to.
  *
- * - Within prune_icache() (PF_MEMALLOC == true)
- *   Here we simply return.  We can't afford to block kswapd on the
- *   journal commit.
+ * - Within iput_final() -> write_inode_now()
+ *   We wait on commit, if told to.
  *
  * In all cases it is actually safe for us to return without doing anything,
  * because the inode has been copied into a raw inode buffer in
- * ext4_mark_inode_dirty().  This is a correctness thing for O_SYNC and for
- * knfsd.
+ * ext4_mark_inode_dirty().  This is a correctness thing for WB_SYNC_ALL
+ * writeback.
  *
  * Note that we are absolutely dependent upon all inode dirtiers doing the
  * right thing: they *must* call mark_inode_dirty() after dirtying info in
@@ -4551,15 +4557,16 @@ out_brelse:
  *	stuff();
  *	inode->i_size = expr;
  *
- * is in error because a kswapd-driven write_inode() could occur while
- * `stuff()' is running, and the new i_size will be lost.  Plus the inode
- * will no longer be on the superblock's dirty inode list.
+ * is in error because write_inode() could occur while `stuff()' is running,
+ * and the new i_size will be lost.  Plus the inode will no longer be on the
+ * superblock's dirty inode list.
  */
 int ext4_write_inode(struct inode *inode, struct writeback_control *wbc)
 {
 	int err;
 
-	if (current->flags & PF_MEMALLOC)
+	if (WARN_ON_ONCE(current->flags & PF_MEMALLOC) ||
+	    (inode->i_sb->s_flags & MS_RDONLY))
 		return 0;
 
 	if (EXT4_SB(inode->i_sb)->s_journal) {
@@ -4572,7 +4579,8 @@ int ext4_write_inode(struct inode *inode, struct writeback_control *wbc)
 		if (wbc->sync_mode != WB_SYNC_ALL)
 			return 0;
 
-		err = ext4_force_commit(inode->i_sb);
+		err = jbd2_complete_transaction(EXT4_SB(inode->i_sb)->s_journal,
+						EXT4_I(inode)->i_sync_tid);
 	} else {
 		struct ext4_iloc iloc;
 
@@ -4980,8 +4988,9 @@ static int ext4_expand_extra_isize(struct inode *inode,
 	/* No extended attributes present */
 	if (!ext4_test_inode_state(inode, EXT4_STATE_XATTR) ||
 	    header->h_magic != cpu_to_le32(EXT4_XATTR_MAGIC)) {
-		memset((void *)raw_inode + EXT4_GOOD_OLD_INODE_SIZE, 0,
-			new_extra_isize);
+		memset((void *)raw_inode + EXT4_GOOD_OLD_INODE_SIZE +
+		       EXT4_I(inode)->i_extra_isize, 0,
+		       new_extra_isize - EXT4_I(inode)->i_extra_isize);
 		EXT4_I(inode)->i_extra_isize = new_extra_isize;
 		return 0;
 	}
@@ -5030,8 +5039,6 @@ int ext4_mark_inode_dirty(handle_t *handle, struct inode *inode)
 						      sbi->s_want_extra_isize,
 						      iloc, handle);
 			if (ret) {
-				ext4_set_inode_state(inode,
-						     EXT4_STATE_NO_EXPAND);
 				if (mnt_count !=
 					le16_to_cpu(sbi->s_es->s_mnt_count)) {
 					ext4_warning(inode->i_sb,

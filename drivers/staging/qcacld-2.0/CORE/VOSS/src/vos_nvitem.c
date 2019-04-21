@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2014 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012-2016 The Linux Foundation. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -249,7 +249,7 @@ static CountryInfoTable_t countryInfoTable =
       {REGDOMAIN_FCC, {'G', 'T'}},  //GUATEMALA
       {REGDOMAIN_FCC, {'G', 'U'}},  //GUAM
       {REGDOMAIN_ETSI, {'H', 'U'}}, //HUNGARY
-      {REGDOMAIN_FCC, {'I', 'D'}},  //INDONESIA
+      {REGDOMAIN_ETSI, {'I', 'D'}},  //INDONESIA
       {REGDOMAIN_ETSI, {'I', 'E'}}, //IRELAND
       {REGDOMAIN_ETSI, {'I', 'L'}}, //ISRAEL
       {REGDOMAIN_ETSI, {'I', 'N'}}, //INDIA
@@ -319,12 +319,12 @@ static CountryInfoTable_t countryInfoTable =
       {REGDOMAIN_ETSI, {'T', 'R'}}, //TURKEY
       {REGDOMAIN_ETSI, {'T', 'T'}}, //TRINIDAD AND TOBAGO
       {REGDOMAIN_FCC, {'T', 'W'}}, //TAIWAN, PRIVINCE OF CHINA
-      {REGDOMAIN_FCC, {'T', 'Z'}}, //TANZANIA, UNITED REPUBLIC OF
+      {REGDOMAIN_ETSI, {'T', 'Z'}}, //TANZANIA, UNITED REPUBLIC OF
       {REGDOMAIN_ETSI, {'U', 'A'}}, //UKRAINE
       {REGDOMAIN_ETSI, {'U', 'G'}}, //UGANDA
       {REGDOMAIN_FCC, {'U', 'S'}}, //USA
       {REGDOMAIN_ETSI, {'U', 'Y'}}, //URUGUAY
-      {REGDOMAIN_FCC, {'U', 'Z'}}, //UZBEKISTAN
+      {REGDOMAIN_ETSI, {'U', 'Z'}}, //UZBEKISTAN
       {REGDOMAIN_ETSI, {'V', 'E'}}, //VENEZUELA
       {REGDOMAIN_FCC, {'V', 'I'}}, //VIRGIN ISLANDS, US
       {REGDOMAIN_ETSI, {'V', 'N'}}, //VIETNAM
@@ -1055,12 +1055,7 @@ static int create_linux_regulatory_entry(struct wiphy *wiphy,
             continue;
 
         if (wiphy->bands[i] == NULL)
-        {
-
-            VOS_TRACE(VOS_MODULE_ID_VOSS, VOS_TRACE_LEVEL_ERROR,
-                      "error: wiphy->bands is NULL, i = %d", i);
             continue;
-        }
 
         /* internal channels[] is one continous array for both 2G and 5G bands
            m is internal starting channel index for each band */
@@ -1348,6 +1343,16 @@ int wlan_hdd_linux_reg_notifier(struct wiphy *wiphy,
 #endif
     }
 
+    if (pHddCtx->isWiphySuspended == TRUE) {
+        VOS_TRACE( VOS_MODULE_ID_VOSS, VOS_TRACE_LEVEL_ERROR,
+                  "system/cfg80211 is already suspend");
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,9,0)) || defined(WITH_BACKPORTS)
+        return;
+#else
+        return 0;
+#endif
+    }
+
     sme_GetFreqBand(pHddCtx->hHal, &nBandCapability);
 
     /* first check if this callback is in response to the driver callback */
@@ -1600,10 +1605,7 @@ VOS_STATUS vos_init_wiphy_from_nv_bin(void)
     {
 
         if (wiphy->bands[i] == NULL)
-        {
-            pr_info("error: wiphy->bands[i] is NULL, i = %d\n", i);
             continue;
-        }
 
         /* internal channels[] is one continous array for both 2G and 5G bands
            m is internal starting channel index for each band */

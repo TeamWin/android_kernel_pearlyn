@@ -39,7 +39,7 @@ static struct cpufreq_driver *cpufreq_driver;
 static DEFINE_PER_CPU(struct cpufreq_policy *, cpufreq_cpu_data);
 static DEFINE_PER_CPU(struct cpufreq_policy *, cpufreq_cpu_data_fallback);
 static DEFINE_RWLOCK(cpufreq_driver_lock);
-static DEFINE_MUTEX(cpufreq_governor_lock);
+DEFINE_MUTEX(cpufreq_governor_lock);
 static LIST_HEAD(cpufreq_policy_list);
 
 #ifdef CONFIG_HOTPLUG_CPU
@@ -462,9 +462,11 @@ static ssize_t show_cpuinfo_cur_freq(struct cpufreq_policy *policy,
 					char *buf)
 {
 	unsigned int cur_freq = __cpufreq_get(policy->cpu);
-	if (!cur_freq)
-		return sprintf(buf, "<unknown>");
-	return sprintf(buf, "%u\n", cur_freq);
+
+	if (cur_freq)
+		return sprintf(buf, "%u\n", cur_freq);
+
+	return sprintf(buf, "<unknown>\n");
 }
 
 /**
@@ -1206,6 +1208,27 @@ static int cpufreq_nominate_new_policy_cpu(struct cpufreq_policy *policy,
 	return cpu_dev->id;
 }
 
+#ifdef CONFIG_HOTPLUG_CPU
+static void update_related_cpus(struct cpufreq_policy *policy)
+{
+	unsigned int j;
+
+	for_each_cpu(j, policy->related_cpus) {
+		if (!cpufreq_driver->setpolicy)
+			strlcpy(per_cpu(cpufreq_policy_save, j).gov,
+				policy->governor->name, CPUFREQ_NAME_LEN);
+		per_cpu(cpufreq_policy_save, j).min = policy->user_policy.min;
+		per_cpu(cpufreq_policy_save, j).max = policy->user_policy.max;
+		pr_debug("Saving CPU%d user policy min %d and max %d\n",
+		 j, policy->user_policy.min, policy->user_policy.max);
+	}
+}
+#else
+static void update_related_cpus(struct cpufreq_policy *policy)
+{
+}
+#endif
+
 static int __cpufreq_remove_dev_prepare(struct device *dev,
 					struct subsys_interface *sif,
 					bool frozen)
@@ -1241,19 +1264,12 @@ static int __cpufreq_remove_dev_prepare(struct device *dev,
 		}
 	}
 
-#ifdef CONFIG_HOTPLUG_CPU
-	if (!cpufreq_driver->setpolicy)
-		strlcpy(per_cpu(cpufreq_policy_save, cpu).gov,
-			policy->governor->name, CPUFREQ_NAME_LEN);
-	per_cpu(cpufreq_policy_save, cpu).min = policy->user_policy.min;
-	per_cpu(cpufreq_policy_save, cpu).max = policy->user_policy.max;
-	pr_debug("Saving CPU%d user policy min %d and max %d\n",
-		 cpu, policy->user_policy.min, policy->user_policy.max);
-#endif
-
 	down_read(&policy->rwsem);
 	cpus = cpumask_weight(policy->cpus);
 	up_read(&policy->rwsem);
+
+	if (cpus == 1)
+		update_related_cpus(policy);
 
 	if (cpu != policy->cpu) {
 		sysfs_remove_link(&dev->kobj, "cpufreq");
@@ -2014,6 +2030,7 @@ static int cpufreq_set_policy(struct cpufreq_policy *policy,
 
 	policy->min = new_policy->min;
 	policy->max = new_policy->max;
+	trace_cpu_frequency_limits(policy->max, policy->min, policy->cpu);
 
 	pr_debug("new min and max freqs are %u - %u kHz\n",
 					policy->min, policy->max);

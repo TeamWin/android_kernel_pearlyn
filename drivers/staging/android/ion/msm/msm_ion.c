@@ -299,45 +299,6 @@ static void msm_ion_allocate(struct ion_platform_heap *heap)
 	}
 }
 
-static int is_heap_overlapping(const struct ion_platform_heap *heap1,
-				const struct ion_platform_heap *heap2)
-{
-	ion_phys_addr_t heap1_base = heap1->base;
-	ion_phys_addr_t heap2_base = heap2->base;
-	ion_phys_addr_t heap1_end = heap1->base + heap1->size - 1;
-	ion_phys_addr_t heap2_end = heap2->base + heap2->size - 1;
-
-	if (heap1_base == heap2_base)
-		return 1;
-	if (heap1_base < heap2_base && heap1_end >= heap2_base)
-		return 1;
-	if (heap2_base < heap1_base && heap2_end >= heap1_base)
-		return 1;
-	return 0;
-}
-
-static void check_for_heap_overlap(const struct ion_platform_heap heap_list[],
-				   unsigned long nheaps)
-{
-	unsigned long i;
-	unsigned long j;
-
-	for (i = 0; i < nheaps; ++i) {
-		const struct ion_platform_heap *heap1 = &heap_list[i];
-		if (!heap1->base)
-			continue;
-		for (j = i + 1; j < nheaps; ++j) {
-			const struct ion_platform_heap *heap2 = &heap_list[j];
-			if (!heap2->base)
-				continue;
-			if (is_heap_overlapping(heap1, heap2)) {
-				panic("Memory in heap %s overlaps with heap %s\n",
-					heap1->name, heap2->name);
-			}
-		}
-	}
-}
-
 #ifdef CONFIG_OF
 static int msm_init_extra_data(struct device_node *node,
 			       struct ion_platform_heap *heap,
@@ -913,6 +874,8 @@ int msm_ion_heap_buffer_zero(struct ion_buffer *buffer)
 	for_each_sg(table->sgl, sg, table->nents, i) {
 		struct page *page = sg_page(sg);
 		unsigned long len = sg->length;
+		/* needed to make dma_sync_sg_for_device work: */
+		sg->dma_address = sg_phys(sg);
 
 		for (j = 0; j < len / PAGE_SIZE; j++)
 			pages_mem.pages[npages++] = page + j;
@@ -931,10 +894,6 @@ static struct ion_heap *msm_ion_heap_create(struct ion_platform_heap *heap_data)
 
 	switch ((int)heap_data->type) {
 #ifdef CONFIG_CMA
-	case ION_HEAP_TYPE_DMA:
-		heap = ion_cma_heap_create(heap_data);
-		break;
-
 	case ION_HEAP_TYPE_SECURE_DMA:
 		heap = ion_secure_cma_heap_create(heap_data);
 		break;
@@ -967,9 +926,6 @@ static void msm_ion_heap_destroy(struct ion_heap *heap)
 
 	switch ((int)heap->type) {
 #ifdef CONFIG_CMA
-	case ION_HEAP_TYPE_DMA:
-		ion_cma_heap_destroy(heap);
-		break;
 	case ION_HEAP_TYPE_SECURE_DMA:
 		ion_secure_cma_heap_destroy(heap);
 		break;
@@ -1044,7 +1000,6 @@ static int msm_ion_probe(struct platform_device *pdev)
 
 		ion_device_add_heap(new_dev, heaps[i]);
 	}
-	check_for_heap_overlap(pdata->heaps, num_heaps);
 	if (pdata_needs_to_be_freed)
 		free_pdata(pdata);
 

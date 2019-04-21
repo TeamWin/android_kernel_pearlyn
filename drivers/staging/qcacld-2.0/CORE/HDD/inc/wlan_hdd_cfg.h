@@ -532,12 +532,12 @@ enum
 #define CFG_ACTIVE_MAX_CHANNEL_TIME_NAME       "gActiveMaxChannelTime"
 #define CFG_ACTIVE_MAX_CHANNEL_TIME_MIN        ( 0 )
 #define CFG_ACTIVE_MAX_CHANNEL_TIME_MAX        ( 10000 )
-#define CFG_ACTIVE_MAX_CHANNEL_TIME_DEFAULT    ( 50 )
+#define CFG_ACTIVE_MAX_CHANNEL_TIME_DEFAULT    ( 40 )
 
 #define CFG_ACTIVE_MIN_CHANNEL_TIME_NAME       "gActiveMinChannelTime"
 #define CFG_ACTIVE_MIN_CHANNEL_TIME_MIN        ( 0 )
 #define CFG_ACTIVE_MIN_CHANNEL_TIME_MAX        ( 10000 )
-#define CFG_ACTIVE_MIN_CHANNEL_TIME_DEFAULT    ( 30 )
+#define CFG_ACTIVE_MIN_CHANNEL_TIME_DEFAULT    ( 20 )
 
 #define CFG_ACTIVE_MAX_CHANNEL_TIME_BTC_NAME       "gActiveMaxChannelTimeBtc"
 #define CFG_ACTIVE_MAX_CHANNEL_TIME_BTC_MIN        ( 0 )
@@ -2065,7 +2065,7 @@ typedef enum
  *  and select one, based on the capability of peer.
  */
 #define CFG_TDLS_PREFERRED_OFF_CHANNEL_BW          "gTDLSPrefOffChanBandwidth"
-#define CFG_TDLS_PREFERRED_OFF_CHANNEL_BW_MIN      (0)
+#define CFG_TDLS_PREFERRED_OFF_CHANNEL_BW_MIN      (1)
 #define CFG_TDLS_PREFERRED_OFF_CHANNEL_BW_MAX      (0x0F)
 #define CFG_TDLS_PREFERRED_OFF_CHANNEL_BW_DEFAULT  (0x07)
 

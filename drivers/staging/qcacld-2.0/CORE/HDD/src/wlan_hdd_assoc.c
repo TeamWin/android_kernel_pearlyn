@@ -69,7 +69,7 @@
 #ifdef IPA_OFFLOAD
 #include <wlan_hdd_ipa.h>
 #endif
-v_BOOL_t mibIsDot11DesiredBssTypeInfrastructure( hdd_adapter_t *pAdapter );
+#include <vos_sched.h>
 
 struct ether_addr
 {
@@ -389,7 +389,7 @@ static void hdd_SendFTAssocResponse(struct net_device *dev, hdd_adapter_t *pAdap
         (unsigned int)pFTAssocRsp[1]);
 
     // We need to send the IEs to the supplicant.
-    buff = kmalloc(IW_GENERIC_IE_MAX, GFP_ATOMIC);
+    buff = vos_mem_malloc(IW_GENERIC_IE_MAX);
     if (buff == NULL)
     {
         hddLog(LOGE, "%s: kmalloc unable to allocate memory", __func__);
@@ -403,7 +403,7 @@ static void hdd_SendFTAssocResponse(struct net_device *dev, hdd_adapter_t *pAdap
     memcpy(buff, pFTAssocRsp, len);
     wireless_send_event(dev, IWEVASSOCRESPIE, &wrqu, buff);
 
-    kfree(buff);
+    vos_mem_free(buff);
 }
 #endif /* WLAN_FEATURE_VOWIFI_11R */
 
@@ -483,7 +483,7 @@ void hdd_SendFTEvent(hdd_adapter_t *pAdapter)
 
 #else
     // We need to send the IEs to the supplicant
-    buff = kmalloc(IW_CUSTOM_MAX, GFP_ATOMIC);
+    buff = vos_mem_malloc(IW_CUSTOM_MAX);
     if (buff == NULL)
     {
         hddLog(LOGE, "%s: kmalloc unable to allocate memory", __func__);
@@ -518,14 +518,14 @@ void hdd_SendFTEvent(hdd_adapter_t *pAdapter)
     if (auth_resp_len == 0)
     {
         hddLog(LOGE, "%s: AuthRsp FTIES is of length 0", __func__);
-        kfree(buff);
+        vos_mem_free(buff);
         return;
     }
 
     wrqu.data.length = str_len + auth_resp_len;
     wireless_send_event(pAdapter->dev, IWEVCUSTOM, &wrqu, buff);
 
-    kfree(buff);
+    vos_mem_free(buff);
 #endif
 }
 
@@ -594,7 +594,7 @@ void hdd_SendUpdateBeaconIEsEvent(hdd_adapter_t *pAdapter, tCsrRoamInfo *pCsrRoa
     hddLog(LOG1, "%s: Beacon IEs length = %d", __func__, pCsrRoamInfo->nBeaconLength - BEACON_FRAME_IES_OFFSET);
 
    // We need to send the IEs to the supplicant.
-    buff = kmalloc(IW_CUSTOM_MAX, GFP_ATOMIC);
+    buff = vos_mem_malloc(IW_CUSTOM_MAX);
     if (buff == NULL)
     {
         hddLog(LOGE, "%s: kmalloc unable to allocate memory", __func__);
@@ -625,7 +625,7 @@ void hdd_SendUpdateBeaconIEsEvent(hdd_adapter_t *pAdapter, tCsrRoamInfo *pCsrRoa
         wireless_send_event(pAdapter->dev, IWEVCUSTOM, &wrqu, buff);
     } while (totalIeLen > 0);
 
-    kfree(buff);
+    vos_mem_free(buff);
 }
 
 static void hdd_SendAssociationEvent(struct net_device *dev,tCsrRoamInfo *pCsrRoamInfo)
@@ -1347,7 +1347,7 @@ static void hdd_SendReAssocEvent(struct net_device *dev,
 {
     unsigned int len = 0;
     u8 *pFTAssocRsp = NULL;
-    v_U8_t *rspRsnIe = kmalloc(IW_GENERIC_IE_MAX, GFP_KERNEL);
+    v_U8_t *rspRsnIe = vos_mem_malloc(IW_GENERIC_IE_MAX);
     tANI_U32 rspRsnLength = 0;
     struct ieee80211_channel *chan;
     hdd_context_t *pHddCtx = WLAN_HDD_GET_CTX(pAdapter);
@@ -1419,7 +1419,7 @@ static void hdd_SendReAssocEvent(struct net_device *dev,
     hddLog(LOG2, FL("SSIDIE:"));
     VOS_TRACE_HEX_DUMP(VOS_MODULE_ID_HDD, VOS_TRACE_LEVEL_DEBUG,
        buf_ssid_ie, ssid_ie_len);
-    final_req_ie = kmalloc(IW_GENERIC_IE_MAX, GFP_KERNEL);
+    final_req_ie = vos_mem_malloc(IW_GENERIC_IE_MAX);
     if (final_req_ie == NULL)
         goto done;
     buf_ptr = final_req_ie;
@@ -1439,8 +1439,8 @@ static void hdd_SendReAssocEvent(struct net_device *dev,
 done:
    sme_RoamFreeConnectProfile(hal_handle, &roam_profile);
    if (final_req_ie)
-      kfree(final_req_ie);
-   kfree(rspRsnIe);
+      vos_mem_free(final_req_ie);
+   vos_mem_free(rspRsnIe);
 }
 
 void hdd_PerformRoamSetKeyComplete(hdd_adapter_t *pAdapter)
@@ -1606,10 +1606,6 @@ static eHalStatus hdd_AssociationCompletionHandler( hdd_adapter_t *pAdapter, tCs
             VOS_TRACE(VOS_MODULE_ID_HDD, VOS_TRACE_LEVEL_INFO,
                                 "Checking for Concurrent Change interference");
         }
-#endif
-
-#ifdef FEATURE_WLAN_TDLS
-        wlan_hdd_tdls_connection_callback(pAdapter);
 #endif
 
 #ifdef QCA_PKT_PROTO_TRACE
@@ -1804,6 +1800,10 @@ static eHalStatus hdd_AssociationCompletionHandler( hdd_adapter_t *pAdapter, tCs
                         NULL,
                         pRoamInfo->pBssDesc );
             }
+
+#ifdef FEATURE_WLAN_TDLS
+        wlan_hdd_tdls_connection_callback(pAdapter);
+#endif
         }
         else
         {
@@ -2463,7 +2463,7 @@ static eHalStatus roamRoamConnectStatusUpdateHandler( hdd_adapter_t *pAdapter, t
       case eCSR_ROAM_RESULT_IBSS_NEW_PEER:
       {
          hdd_station_ctx_t *pHddStaCtx = WLAN_HDD_GET_STATION_CTX_PTR(pAdapter);
-         struct station_info *staInfo;
+         struct station_info staInfo;
 
          pr_info ( "IBSS New Peer indication from SME "
                     "with peerMac " MAC_ADDRESS_STR " BSSID: " MAC_ADDRESS_STR " and stationID= %d",
@@ -2497,22 +2497,13 @@ static eHalStatus roamRoamConnectStatusUpdateHandler( hdd_adapter_t *pAdapter, t
                vosStatus, vosStatus );
          }
          pHddStaCtx->ibss_sta_generation++;
-
-         staInfo = vos_mem_malloc(sizeof(*staInfo));
-         if (staInfo == NULL) {
-             VOS_TRACE(VOS_MODULE_ID_HDD, VOS_TRACE_LEVEL_ERROR,
-                       "memory allocation for station_info failed");
-             return eHAL_STATUS_FAILED_ALLOC;
-         }
-
-         memset(staInfo, 0, sizeof(*staInfo));
-         staInfo->filled = 0;
-         staInfo->generation = pHddStaCtx->ibss_sta_generation;
+         memset(&staInfo, 0, sizeof(staInfo));
+         staInfo.filled = 0;
+         staInfo.generation = pHddStaCtx->ibss_sta_generation;
 
          cfg80211_new_sta(pAdapter->dev,
                       (const u8 *)pRoamInfo->peerMac,
-                      staInfo, GFP_KERNEL);
-         vos_mem_free(staInfo);
+                      &staInfo, GFP_KERNEL);
 
          if ( eCSR_ENCRYPT_TYPE_WEP40_STATICKEY == pHddStaCtx->ibss_enc_key.encType
             ||eCSR_ENCRYPT_TYPE_WEP104_STATICKEY == pHddStaCtx->ibss_enc_key.encType
@@ -2614,7 +2605,8 @@ static eHalStatus roamRoamConnectStatusUpdateHandler( hdd_adapter_t *pAdapter, t
 
   ===========================================================================*/
 VOS_STATUS hdd_roamRegisterTDLSSTA( hdd_adapter_t *pAdapter,
-                                    tANI_U8 *peerMac, tANI_U16 staId, tANI_U8 ucastSig)
+                                    const tANI_U8 *peerMac, tANI_U16 staId,
+                                    tANI_U8 ucastSig, uint8_t qos)
 {
     hdd_station_ctx_t *pHddStaCtx = WLAN_HDD_GET_STATION_CTX_PTR(pAdapter);
     v_CONTEXT_t pVosContext = (WLAN_HDD_GET_CTX(pAdapter))->pvosContext;
@@ -2647,8 +2639,7 @@ VOS_STATUS hdd_roamRegisterTDLSSTA( hdd_adapter_t *pAdapter,
     vos_copy_macaddr( &staDesc.vSelfMACAddress, &pAdapter->macAddressCurrent );
 
     /* set the QoS field appropriately ..*/
-    (hdd_wmm_is_active(pAdapter)) ? (staDesc.ucQosEnabled = 1)
-                                          : (staDesc.ucQosEnabled = 0) ;
+    staDesc.ucQosEnabled = qos;
 
     VOS_TRACE( VOS_MODULE_ID_HDD, VOS_TRACE_LEVEL_INFO_HIGH, "HDD register \
                                 TL QoS_enabled=%d", staDesc.ucQosEnabled );
@@ -2715,7 +2706,7 @@ VOS_STATUS hdd_roamRegisterTDLSSTA( hdd_adapter_t *pAdapter,
     return( vosStatus );
 }
 
-static VOS_STATUS hdd_roamDeregisterTDLSSTA( hdd_adapter_t *pAdapter, tANI_U8 staId )
+VOS_STATUS hdd_roamDeregisterTDLSSTA(hdd_adapter_t *pAdapter, tANI_U8 staId)
 {
     VOS_STATUS vosStatus;
     vosStatus = WLANTL_ClearSTAClient( (WLAN_HDD_GET_CTX(pAdapter))->pvosContext, staId );
@@ -2785,8 +2776,17 @@ eHalStatus hdd_RoamTdlsStatusUpdateHandler(hdd_adapter_t *pAdapter,
         {
             if(eSIR_SME_SUCCESS != pRoamInfo->statusCode)
             {
+                hddTdlsPeer_t *curr_peer;
                 VOS_TRACE(VOS_MODULE_ID_HDD, VOS_TRACE_LEVEL_ERROR,
                      ("%s: Add Sta is failed. %d"),__func__, pRoamInfo->statusCode);
+                mutex_lock(&pHddCtx->tdls_lock);
+                curr_peer = wlan_hdd_tdls_find_peer(pAdapter,
+                                     pRoamInfo->peerMac, FALSE);
+                if (curr_peer)
+                    curr_peer->link_status = eTDLS_LINK_TEARING;
+                else
+                    hddLog(LOG1, FL("curr_peer is Null"));
+                mutex_unlock(&pHddCtx->tdls_lock);
             }
             else
             {
@@ -2851,10 +2851,21 @@ eHalStatus hdd_RoamTdlsStatusUpdateHandler(hdd_adapter_t *pAdapter,
         }
         case eCSR_ROAM_RESULT_LINK_ESTABLISH_REQ_RSP:
         {
+
+            hddTdlsPeer_t *curr_peer;
             if (eSIR_SME_SUCCESS != pRoamInfo->statusCode)
             {
                 VOS_TRACE(VOS_MODULE_ID_HDD, VOS_TRACE_LEVEL_ERROR,
                      "%s: Link Establish Request failed. %d", __func__, pRoamInfo->statusCode);
+                mutex_lock(&pHddCtx->tdls_lock);
+                curr_peer = wlan_hdd_tdls_find_peer(pAdapter,
+                                          pRoamInfo->peerMac, FALSE);
+                if (curr_peer)
+                    curr_peer->link_status = eTDLS_LINK_TEARING;
+                else
+                    hddLog(LOGE, FL("curr_peer is Null"));
+
+                mutex_unlock(&pHddCtx->tdls_lock);
             }
             complete(&pAdapter->tdls_link_establish_req_comp);
             break;
@@ -2891,7 +2902,6 @@ eHalStatus hdd_RoamTdlsStatusUpdateHandler(hdd_adapter_t *pAdapter,
                     pHddCtx->tdlsConnInfo[staIdx].sessionId = 255;
                     vos_mem_zero(&pHddCtx->tdlsConnInfo[staIdx].peerMac,
                                                sizeof(v_MACADDR_t)) ;
-                    wlan_hdd_tdls_check_bmps(pAdapter);
                     status = eHAL_STATUS_SUCCESS ;
                     break ;
                 }
@@ -2899,6 +2909,12 @@ eHalStatus hdd_RoamTdlsStatusUpdateHandler(hdd_adapter_t *pAdapter,
             complete(&pAdapter->tdls_del_station_comp);
         }
         break ;
+        case  eCSR_ROAM_TDLS_CHECK_BMPS:
+        {
+            wlan_hdd_tdls_check_bmps(pAdapter);
+            status = eHAL_STATUS_SUCCESS ;
+            break;
+        }
         case eCSR_ROAM_RESULT_TEARDOWN_TDLS_PEER_IND:
         {
             VOS_TRACE( VOS_MODULE_ID_HDD, VOS_TRACE_LEVEL_ERROR,
@@ -3012,7 +3028,9 @@ eHalStatus hdd_RoamTdlsStatusUpdateHandler(hdd_adapter_t *pAdapter,
                                   curr_peer->isForcedPeer,
                                   pRoamInfo->reasonCode);
                     }
-                    wlan_hdd_tdls_pre_setup_init_work(pHddTdlsCtx, curr_peer);
+                    pHddTdlsCtx->curr_candidate = curr_peer;
+
+                    wlan_hdd_tdls_implicit_send_discovery_request(pHddTdlsCtx);
                 }
                 status = eHAL_STATUS_SUCCESS;
             }
@@ -3382,8 +3400,7 @@ hdd_smeRoamCallback(void *pContext, tCsrRoamInfo *pRoamInfo, tANI_U32 roamId,
                 if((pHddCtx) &&
                    (VOS_TRUE == pHddStaCtx->hdd_ReassocScenario) &&
                    (TRUE == pHddCtx->hdd_wlan_suspended) &&
-                   ((eCSR_ROAM_RESULT_NONE == roamResult)||
-                     (pRoamInfo && pRoamInfo->is11rAssoc)))
+                   (eCSR_ROAM_RESULT_NONE == roamResult))
                 {
                     /* Send DTIM period to the FW; only if the wlan is already
                        in suspend. This is the case with roaming (reassoc),
@@ -3407,8 +3424,7 @@ hdd_smeRoamCallback(void *pContext, tCsrRoamInfo *pRoamInfo, tANI_U32 roamId,
                     }
                 }
                 halStatus = hdd_RoamSetKeyCompleteHandler( pAdapter, pRoamInfo, roamId, roamStatus, roamResult );
-                if ((eCSR_ROAM_RESULT_AUTHENTICATED == roamResult) ||
-                     (pRoamInfo && pRoamInfo->is11rAssoc)) {
+                if (eCSR_ROAM_RESULT_AUTHENTICATED == roamResult) {
                     pHddStaCtx->hdd_ReassocScenario = VOS_FALSE;
                     hddLog(LOG1,
                            FL("hdd_ReassocScenario set to: %d, set key complete, session: %d"),
@@ -3497,6 +3513,7 @@ hdd_smeRoamCallback(void *pContext, tCsrRoamInfo *pRoamInfo, tANI_U32 roamId,
         case eCSR_ROAM_RESULT_MGMT_TX_COMPLETE_IND:
             wlan_hdd_tdls_mgmt_completion_callback(pAdapter, pRoamInfo->reasonCode);
             break;
+
 #endif
 #ifdef WLAN_FEATURE_11W
        case eCSR_ROAM_UNPROT_MGMT_FRAME_IND:
@@ -3739,6 +3756,7 @@ static tANI_S32 hdd_ProcessGENIE(hdd_adapter_t *pAdapter,
     tDot11fIERSN dot11RSNIE;
     tDot11fIEWPA dot11WPAIE;
     tANI_U32 i;
+    tANI_U32 status;
     tANI_U8 *pRsnIe;
     tANI_U16 RSNIeLen;
     tPmkidCacheInfo PMKIDCache[4]; // Local transfer memory
@@ -3764,10 +3782,17 @@ static tANI_S32 hdd_ProcessGENIE(hdd_adapter_t *pAdapter,
         pRsnIe = gen_ie + 2;
         RSNIeLen = gen_ie_len - 2;
         // Unpack the RSN IE
-        dot11fUnpackIeRSN((tpAniSirGlobal) halHandle,
+        status = dot11fUnpackIeRSN((tpAniSirGlobal) halHandle,
                             pRsnIe,
                             RSNIeLen,
                             &dot11RSNIE);
+        if (DOT11F_FAILED(status))
+        {
+            hddLog(LOGE,
+                       FL("Parse failure in hdd_ProcessGENIE (0x%08x)"),
+                       status);
+            return -EINVAL;
+        }
         // Copy out the encryption and authentication types
         hddLog(LOG1, FL("%s: pairwise cipher suite count: %d"),
                 __func__, dot11RSNIE.pwise_cipher_suite_count );
@@ -4042,21 +4067,17 @@ int hdd_set_csr_auth_type ( hdd_adapter_t  *pAdapter, eCsrAuthType RSNAuthType)
     return 0;
 }
 
-/**---------------------------------------------------------------------------
-
-  \brief iw_set_essid() -
-   This function sets the ssid received from wpa_supplicant
-   to the CSR roam profile.
-
-  \param  - dev - Pointer to the net device.
-              - info - Pointer to the iw_request_info.
-              - wrqu - Pointer to the iwreq_data.
-              - extra - Pointer to the data.
-  \return - 0 for success, non zero for failure
-
-  --------------------------------------------------------------------------*/
-
-int iw_set_essid(struct net_device *dev,
+/**
+ * __iw_set_essid() - This function sets the ssid received from wpa_supplicant
+ *			to the CSR roam profile.
+ * @dev: Pointer to the net device.
+ * @info: Pointer to the iw_request_info.
+ * @wrqu: Pointer to the iwreq_data.
+ * @extra: Pointer to the data.
+ *
+ * Return: 0 for success, error number on failure
+ */
+static int __iw_set_essid(struct net_device *dev,
                         struct iw_request_info *info,
                         union iwreq_data *wrqu, char *extra)
 {
@@ -4219,21 +4240,40 @@ int iw_set_essid(struct net_device *dev,
     return status;
 }
 
-/**---------------------------------------------------------------------------
+/**
+ * iw_set_essid() - set essid handler function
+ * @dev: Pointer to the net device.
+ * @info: Pointer to the iw_request_info.
+ * @wrqu: Pointer to the iwreq_data.
+ * @extra: Pointer to the data.
+ *
+ * Return: 0 for success, error number on failure
+ */
+int iw_set_essid(struct net_device *dev,
+		 struct iw_request_info *info,
+		 union iwreq_data *wrqu, char *extra)
+{
+	int ret;
 
-  \brief iw_get_essid() -
-   This function returns the essid to the wpa_supplicant.
+	vos_ssr_protect(__func__);
+	ret = __iw_set_essid(dev, info, wrqu, extra);
+	vos_ssr_unprotect(__func__);
 
-  \param  - dev - Pointer to the net device.
-              - info - Pointer to the iw_request_info.
-              - wrqu - Pointer to the iwreq_data.
-              - extra - Pointer to the data.
-  \return - 0 for success, non zero for failure
+	return ret;
+}
 
-  --------------------------------------------------------------------------*/
-int iw_get_essid(struct net_device *dev,
-                       struct iw_request_info *info,
-                       struct iw_point *dwrq, char *extra)
+/**
+ * __iw_get_essid() - This function returns the essid to the wpa_supplicant
+ * @dev: Pointer to the net device.
+ * @info: Pointer to the iw_request_info.
+ * @wrqu: Pointer to the iwreq_data.
+ * @extra: Pointer to the data.
+ *
+ * Return: 0 for success, error number on failure
+ */
+static int __iw_get_essid(struct net_device *dev,
+			  struct iw_request_info *info,
+			  struct iw_point *dwrq, char *extra)
 {
    hdd_adapter_t *pAdapter = WLAN_HDD_GET_PRIV_PTR(dev);
    hdd_wext_state_t *wextBuf = WLAN_HDD_GET_WEXT_STATE_PTR(pAdapter);
@@ -4257,20 +4297,41 @@ int iw_get_essid(struct net_device *dev,
    EXIT();
    return 0;
 }
-/**---------------------------------------------------------------------------
 
-  \brief iw_set_auth() -
-   This function sets the auth type received from the wpa_supplicant.
+/**
+ * iw_get_essid() - get essid handler function
+ * @dev: Pointer to the net device.
+ * @info: Pointer to the iw_request_info.
+ * @wrqu: Pointer to the iwreq_data.
+ * @extra: Pointer to the data.
+ *
+ * Return: 0 for success, error number on failure
+ */
+int iw_get_essid(struct net_device *dev,
+		 struct iw_request_info *info,
+		 struct iw_point *wrqu, char *extra)
+{
+	int ret;
 
-  \param  - dev - Pointer to the net device.
-              - info - Pointer to the iw_request_info.
-              - wrqu - Pointer to the iwreq_data.
-              - extra - Pointer to the data.
-  \return - 0 for success, non zero for failure
+	vos_ssr_protect(__func__);
+	ret = __iw_get_essid(dev, info, wrqu, extra);
+	vos_ssr_unprotect(__func__);
 
-  --------------------------------------------------------------------------*/
-int iw_set_auth(struct net_device *dev,struct iw_request_info *info,
-                        union iwreq_data *wrqu,char *extra)
+	return ret;
+}
+
+/**
+ * __iw_set_auth() - This function sets the auth type received
+ *			from the wpa_supplicant.
+ * @dev: Pointer to the net device.
+ * @info: Pointer to the iw_request_info.
+ * @wrqu: Pointer to the iwreq_data.
+ * @extra: Pointer to the data.
+ *
+ * Return: 0 for success, error number on failure.
+ */
+static int __iw_set_auth(struct net_device *dev, struct iw_request_info *info,
+			 union iwreq_data *wrqu, char *extra)
 {
    hdd_adapter_t *pAdapter = WLAN_HDD_GET_PRIV_PTR(dev);
    hdd_wext_state_t *pWextState = WLAN_HDD_GET_WEXT_STATE_PTR(pAdapter);
@@ -4483,20 +4544,39 @@ int iw_set_auth(struct net_device *dev,struct iw_request_info *info,
    EXIT();
    return 0;
 }
-/**---------------------------------------------------------------------------
 
-  \brief iw_get_auth() -
-   This function returns the auth type to the wpa_supplicant.
+/**
+ * iw_set_auth() - set auth callback function
+ * @dev: Pointer to the net device.
+ * @info: Pointer to the iw_request_info.
+ * @wrqu: Pointer to the iwreq_data.
+ * @extra: Pointer to the data.
+ *
+ * Return: 0 for success, error number on failure.
+ */
+int iw_set_auth(struct net_device *dev, struct iw_request_info *info,
+		union iwreq_data *wrqu, char *extra)
+{
+	int ret;
 
-  \param  - dev - Pointer to the net device.
-              - info - Pointer to the iw_request_info.
-              - wrqu - Pointer to the iwreq_data.
-              - extra - Pointer to the data.
-  \return - 0 for success, non zero for failure
+	vos_ssr_protect(__func__);
+	ret = __iw_set_auth(dev, info, wrqu, extra);
+	vos_ssr_unprotect(__func__);
 
-  --------------------------------------------------------------------------*/
-int iw_get_auth(struct net_device *dev,struct iw_request_info *info,
-                         union iwreq_data *wrqu,char *extra)
+	return ret;
+}
+
+/**
+ * __iw_get_auth() - This function returns the auth type to the wpa_supplicant.
+ * @dev: Pointer to the net device.
+ * @info: Pointer to the iw_request_info.
+ * @wrqu: Pointer to the iwreq_data.
+ * @extra: Pointer to the data.
+ *
+ * Return: 0 for success, error number on failure.
+ */
+static int __iw_get_auth(struct net_device *dev, struct iw_request_info *info,
+			 union iwreq_data *wrqu, char *extra)
 {
     hdd_adapter_t* pAdapter = WLAN_HDD_GET_PRIV_PTR(dev);
     hdd_wext_state_t *pWextState= WLAN_HDD_GET_WEXT_STATE_PTR(pAdapter);
@@ -4621,20 +4701,40 @@ int iw_get_auth(struct net_device *dev,struct iw_request_info *info,
     EXIT();
     return 0;
 }
-/**---------------------------------------------------------------------------
 
-  \brief iw_set_ap_address() -
-   This function calls the sme_RoamConnect function to associate
-   to the AP with the specified BSSID received from the wpa_supplicant.
+/**
+ * iw_get_auth() - get auth callback function
+ * @dev: Pointer to the net device.
+ * @info: Pointer to the iw_request_info.
+ * @wrqu: Pointer to the iwreq_data.
+ * @extra: Pointer to the data.
+ *
+ * Return: 0 for success, error number on failure.
+ */
+int iw_get_auth(struct net_device *dev, struct iw_request_info *info,
+		union iwreq_data *wrqu, char *extra)
+{
+	int ret;
 
-  \param  - dev - Pointer to the net device.
-              - info - Pointer to the iw_request_info.
-              - wrqu - Pointer to the iwreq_data.
-              - extra - Pointer to the data.
-  \return - 0 for success, non zero for failure
+	vos_ssr_protect(__func__);
+	ret = __iw_get_auth(dev, info, wrqu, extra);
+	vos_ssr_unprotect(__func__);
 
-  --------------------------------------------------------------------------*/
-int iw_set_ap_address(struct net_device *dev,
+	return ret;
+}
+
+/**
+ * __iw_set_ap_address() - This function calls the sme_RoamConnect function
+ *			to associate to the AP with the specified
+ *			BSSID received from the wpa_supplicant.
+ * @dev: Pointer to the net device.
+ * @info: Pointer to the iw_request_info.
+ * @wrqu: Pointer to the iwreq_data.
+ * @extra: Pointer to the data.
+ *
+ * Return: 0 for success, error number on failure.
+ */
+static int __iw_set_ap_address(struct net_device *dev,
         struct iw_request_info *info,
         union iwreq_data *wrqu, char *extra)
 {
@@ -4649,22 +4749,41 @@ int iw_set_ap_address(struct net_device *dev,
 
     return 0;
 }
-/**---------------------------------------------------------------------------
 
-  \brief iw_get_ap_address() -
-   This function returns the BSSID to the wpa_supplicant
-  \param  - dev - Pointer to the net device.
-              - info - Pointer to the iw_request_info.
-              - wrqu - Pointer to the iwreq_data.
-              - extra - Pointer to the data.
-  \return - 0 for success, non zero for failure
+/**
+ * iw_set_ap_address() - set ap addresses callback function
+ * @dev: Pointer to the net device.
+ * @info: Pointer to the iw_request_info.
+ * @wrqu: Pointer to the iwreq_data.
+ * @extra: Pointer to the data.
+ *
+ * Return: 0 for success, error number on failure.
+ */
+int iw_set_ap_address(struct net_device *dev, struct iw_request_info *info,
+			union iwreq_data *wrqu, char *extra)
+{
+	int ret;
 
-  --------------------------------------------------------------------------*/
-int iw_get_ap_address(struct net_device *dev,
+	vos_ssr_protect(__func__);
+	ret = __iw_set_ap_address(dev, info, wrqu, extra);
+	vos_ssr_unprotect(__func__);
+
+	return ret;
+}
+
+/**
+ * __iw_get_ap_address() - This function returns the BSSID to the wpa_supplicant
+ * @dev: Pointer to the net device.
+ * @info: Pointer to the iw_request_info.
+ * @wrqu: Pointer to the iwreq_data.
+ * @extra: Pointer to the data.
+ *
+ * Return: 0 for success, error number on failure.
+ */
+static int __iw_get_ap_address(struct net_device *dev,
                              struct iw_request_info *info,
                              union iwreq_data *wrqu, char *extra)
 {
-    //hdd_adapter_t *pAdapter = WLAN_HDD_GET_PRIV_PTR(dev);
     hdd_station_ctx_t *pHddStaCtx = WLAN_HDD_GET_STATION_CTX_PTR(WLAN_HDD_GET_PRIV_PTR(dev));
 
     ENTER();
@@ -4680,6 +4799,27 @@ int iw_get_ap_address(struct net_device *dev,
     }
     EXIT();
     return 0;
+}
+
+/**
+ * iw_get_ap_address() - get ap addresses callback function
+ * @dev: Pointer to the net device.
+ * @info: Pointer to the iw_request_info.
+ * @wrqu: Pointer to the iwreq_data.
+ * @extra: Pointer to the data.
+ *
+ * Return: 0 for success, error number on failure.
+ */
+int iw_get_ap_address(struct net_device *dev, struct iw_request_info *info,
+			union iwreq_data *wrqu, char *extra)
+{
+	int ret;
+
+	vos_ssr_protect(__func__);
+	ret = __iw_get_ap_address(dev, info, wrqu, extra);
+	vos_ssr_unprotect(__func__);
+
+	return ret;
 }
 
 #ifdef WLAN_FEATURE_11W

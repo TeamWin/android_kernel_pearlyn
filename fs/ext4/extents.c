@@ -742,6 +742,12 @@ ext4_ext_find_extent(struct inode *inode, ext4_lblk_t block,
 
 	eh = ext_inode_hdr(inode);
 	depth = ext_depth(inode);
+	if (depth < 0 || depth > EXT4_MAX_EXTENT_DEPTH) {
+		EXT4_ERROR_INODE(inode, "inode has invalid extent depth: %d",
+				 depth);
+		ret = -EIO;
+		goto err;
+	}
 
 	/* account possible depth increase */
 	if (!path) {
@@ -4737,7 +4743,8 @@ int ext4_fiemap(struct inode *inode, struct fiemap_extent_info *fieinfo,
 	if (ext4_has_inline_data(inode)) {
 		int has_inline = 1;
 
-		error = ext4_inline_data_fiemap(inode, fieinfo, &has_inline);
+		error = ext4_inline_data_fiemap(inode, fieinfo, &has_inline,
+						start, len);
 
 		if (has_inline)
 			return error;

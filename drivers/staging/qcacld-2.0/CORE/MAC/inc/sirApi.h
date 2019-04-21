@@ -107,7 +107,6 @@ typedef tANI_U8 tSirVersionString[SIR_VERSION_STRING_LEN];
 #define WLAN_EXTSCAN_MAX_BUCKETS                  16
 #define WLAN_EXTSCAN_MAX_HOTLIST_APS              128
 #define WLAN_EXTSCAN_MAX_SIGNIFICANT_CHANGE_APS   64
-#define WLAN_EXTSCAN_MAX_HOTLIST_SSIDS            8
 
 typedef enum
 {
@@ -131,7 +130,6 @@ typedef enum
     eSIR_PASSPOINT_NETWORK_FOUND_IND,
     eSIR_EXTSCAN_SET_SSID_HOTLIST_RSP,
     eSIR_EXTSCAN_RESET_SSID_HOTLIST_RSP,
-    eSIR_EXTSCAN_HOTLIST_SSID_MATCH_IND,
 
     /* Keep this last */
     eSIR_EXTSCAN_CALLBACK_TYPE_MAX,
@@ -3302,6 +3300,7 @@ typedef struct sSirWPSProbeRspIE {
 #define SIR_WPS_BEACON_SELECTEDREGISTRACFGMETHOD_PRESENT    0x00000020
 #define SIR_WPS_BEACON_UUIDE_PRESENT    0x00000080
 #define SIR_WPS_BEACON_RF_BANDS_PRESENT    0x00000100
+#define SIR_WPS_UUID_LEN 16
 
 typedef struct sSirWPSBeaconIE {
    v_U32_t  FieldPresent;
@@ -3311,7 +3310,7 @@ typedef struct sSirWPSBeaconIE {
    v_BOOL_t SelectedRegistra;  //BOOL:  indicates if the user has recently activated a Registrar to add an Enrollee.
    v_U16_t  DevicePasswordID;  // Device Password ID
    v_U16_t  SelectedRegistraCfgMethod; // Selected Registrar config method
-   v_U8_t   UUID_E[16];        // Unique identifier of the AP.
+   v_U8_t   UUID_E[SIR_WPS_UUID_LEN];   /* Unique identifier of the AP */
    v_U8_t   RFBand;           // RF bands available on the AP
 } tSirWPSBeaconIE;
 
@@ -3370,7 +3369,6 @@ typedef struct sSirSetHT2040Mode
 } tSirSetHT2040Mode, *tpSirSetHT2040Mode;
 #endif
 
-#define SIR_WPS_UUID_LEN 16
 #define SIR_WPS_PBC_WALK_TIME   120  // 120 Second
 
 typedef struct sSirWPSPBCSession {
@@ -4240,6 +4238,7 @@ typedef struct
     tANI_U16            transactionId; // Transaction ID for cmd
     tSirResultCodes        statusCode;
     tSirMacAddr            peerMac;
+    uint16_t            sta_idx;
 }tSirTdlsLinkEstablishReqRsp, *tpSirTdlsLinkEstablishReqRsp;
 
 /* TDLS Request struct SME-->PE */
@@ -4311,6 +4310,7 @@ typedef struct sSirActiveModeSetBcnFilterReq
    tANI_U16               messageType;
    tANI_U16               length;
    tANI_U8                seesionId;
+   tSirMacAddr            bssid;
 } tSirSetActiveModeSetBncFilterReq, *tpSirSetActiveModeSetBncFilterReq;
 
 //Reset AP Caps Changed
@@ -4389,20 +4389,32 @@ typedef struct sSirScanOffloadReq {
       -----------------------------*/
 } tSirScanOffloadReq, *tpSirScanOffloadReq;
 
-typedef enum sSirScanEventType {
-    SCAN_EVENT_STARTED=0x1,          /* Scan command accepted by FW */
-    SCAN_EVENT_COMPLETED=0x2,        /* Scan has been completed by FW */
-    SCAN_EVENT_BSS_CHANNEL=0x4,      /* FW is going to move to HOME channel */
-    SCAN_EVENT_FOREIGN_CHANNEL = 0x8,/* FW is going to move to FORIEGN channel */
-    SCAN_EVENT_DEQUEUED=0x10,       /* scan request got dequeued */
-    SCAN_EVENT_PREEMPTED=0x20,      /* preempted by other high priority scan */
-    SCAN_EVENT_START_FAILED=0x40,   /* scan start failed */
-    SCAN_EVENT_RESTARTED=0x80,      /*scan restarted*/
-    SCAN_EVENT_MAX=0x8000
-} tSirScanEventType;
+/**
+ * sir_scan_event_type - scan event types used in LIM
+ * @SIR_SCAN_EVENT_STARTED - scan command accepted by FW
+ * @SIR_SCAN_EVENT_COMPLETED - scan has been completed by FW
+ * @SIR_SCAN_EVENT_BSS_CHANNEL - FW is going to move to HOME channel
+ * @SIR_SCAN_EVENT_FOREIGN_CHANNEL - FW is going to move to FORIEGN channel
+ * @SIR_SCAN_EVENT_DEQUEUED - scan request got dequeued
+ * @SIR_SCAN_EVENT_PREEMPTED - preempted by other high priority scan
+ * @SIR_SCAN_EVENT_START_FAILED - scan start failed
+ * @SIR_SCAN_EVENT_RESTARTED - scan restarted
+ * @SIR_SCAN_EVENT_MAX - max value for event type
+*/
+enum sir_scan_event_type {
+    SIR_SCAN_EVENT_STARTED=0x1,
+    SIR_SCAN_EVENT_COMPLETED=0x2,
+    SIR_SCAN_EVENT_BSS_CHANNEL=0x4,
+    SIR_SCAN_EVENT_FOREIGN_CHANNEL = 0x8,
+    SIR_SCAN_EVENT_DEQUEUED=0x10,
+    SIR_SCAN_EVENT_PREEMPTED=0x20,
+    SIR_SCAN_EVENT_START_FAILED=0x40,
+    SIR_SCAN_EVENT_RESTARTED=0x80,
+    SIR_SCAN_EVENT_MAX=0x8000
+};
 
 typedef struct sSirScanOffloadEvent{
-    tSirScanEventType event;
+    enum sir_scan_event_type event;
     tSirResultCodes reasonCode;
     tANI_U32 chanFreq;
     tANI_U32 requestor;
@@ -5250,37 +5262,6 @@ typedef struct
 } tSirExtScanResetBssidHotlistReqParams,
   *tpSirExtScanResetBssidHotlistReqParams;
 
-/**
- * struct sir_ssid_hotlist_param - param for SSID Hotlist
- * @ssid: SSID which is being hotlisted
- * @band: Band in which the given SSID should be scanned
- * @rssi_low: Low bound on RSSI
- * @rssi_high: High bound on RSSI
- */
-struct sir_ssid_hotlist_param {
-	tSirMacSSid ssid;
-	uint8_t band;
-	int32_t rssi_low;
-	int32_t rssi_high;
-};
-
-/**
- * struct sir_set_ssid_hotlist_request - set SSID hotlist request struct
- * @request_id: ID of the request
- * @session_id: ID of the session
- * @lost_ssid_sample_size: Number of consecutive scans in which the SSID
- *	must not be seen in order to consider the SSID "lost"
- * @ssid_count: Number of valid entries in the @ssids array
- * @ssids: Array that defines the SSIDs that are in the hotlist
- */
-struct sir_set_ssid_hotlist_request {
-	uint32_t request_id;
-	uint8_t session_id;
-	uint32_t lost_ssid_sample_size;
-	uint32_t ssid_count;
-	struct sir_ssid_hotlist_param ssids[WLAN_EXTSCAN_MAX_HOTLIST_SSIDS];
-};
-
 typedef struct
 {
     tANI_U32              requestId;
@@ -5372,6 +5353,7 @@ struct wifi_epno_params
 	struct wifi_epno_network networks[];
 };
 
+#define SIR_PASSPOINT_LIST_MAX_NETWORKS 8
 #define SIR_PASSPOINT_REALM_LEN 256
 #define SIR_PASSPOINT_ROAMING_CONSORTIUM_ID_NUM 16
 #define SIR_PASSPOINT_PLMN_LEN 3
@@ -5918,61 +5900,6 @@ struct sir_guard_time_request
 /* Max number of rates allowed in Supported Rates IE */
 #define MAX_NUM_SUPPORTED_RATES (8)
 
-#define MAX_NUM_FW_SEGMENTS 4
-
-/**
- * struct fw_dump_seg_req - individual segment details
- * @seg_id - segment id.
- * @seg_start_addr_lo - lower address of the segment.
- * @seg_start_addr_hi - higher address of the segment.
- * @seg_length - length of the segment.
- * @dst_addr_lo - lower address of the destination buffer.
- * @dst_addr_hi - higher address of the destination buffer.
- *
- * This structure carries the information to firmware about the
- * individual segments. This structure is part of firmware memory
- * dump request.
- */
-struct fw_dump_seg_req
-{
-	uint8_t seg_id;
-	uint32_t seg_start_addr_lo;
-	uint32_t seg_start_addr_hi;
-	uint32_t seg_length;
-	uint32_t dst_addr_lo;
-	uint32_t dst_addr_hi;
-};
-
-/**
- * struct fw_dump_req - firmware memory dump request details.
- * @request_id - request id.
- * @num_seg - requested number of segments.
- * @fw_dump_seg_req - individual segment information.
- *
- * This structure carries information about the firmware
- * memory dump request.
- */
-struct fw_dump_req
-{
-	uint32_t request_id;
-	uint32_t num_seg;
-	struct fw_dump_seg_req segment[MAX_NUM_FW_SEGMENTS];
-};
-
-/**
- * struct fw_dump_rsp - firmware dump response details.
- * @request_id - request id.
- * @dump_complete - copy completion status.
- *
- * This structure is used to store the firmware dump copy complete
- * response from the firmware.
- */
-struct fw_dump_rsp
-{
-	uint32_t request_id;
-	uint32_t dump_complete;
-};
-
 /*
  * struct rssi_monitor_req - rssi monitoring
  * @request_id: request id
@@ -6001,6 +5928,18 @@ struct rssi_breach_event {
 	uint32_t     session_id;
 	int8_t       curr_rssi;
 	v_MACADDR_t  curr_bssid;
+};
+
+/**
+ * struct sir_del_all_tdls_peers - delete all tdls peers
+ * @msg_type: type of message
+ * @msg_len: length of message
+ * bssid: bssid of peer device
+ */
+struct sir_del_all_tdls_peers {
+	uint16_t msg_type;
+	uint16_t msg_len;
+	tSirMacAddr bssid;
 };
 
 #endif /* __SIR_API_H */

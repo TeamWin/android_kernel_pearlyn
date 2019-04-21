@@ -54,7 +54,7 @@
 
 //Ms to Micro Sec
 #define MS_TO_MUS(x)   ((x)*1000);
-#ifdef BUILD_DEBUG_VERSION
+
 tANI_U8* hdd_getActionString( tANI_U16 MsgType )
 {
     switch (MsgType)
@@ -81,7 +81,7 @@ tANI_U8* hdd_getActionString( tANI_U16 MsgType )
            return ("UNKNOWN");
      }
 }
-#endif
+
 #ifdef WLAN_FEATURE_P2P_DEBUG
 #define MAX_P2P_ACTION_FRAME_TYPE 9
 const char *p2p_action_frame_type[]={"GO Negotiation Request",
@@ -131,9 +131,12 @@ static void hdd_sendMgmtFrameOverMonitorIface( hdd_adapter_t *pMonAdapter,
                                                tANI_U8* pbFrames,
                                                tANI_U8 frameType );
 
-static bool wlan_hdd_is_type_p2p_action( const u8 *buf )
+static bool wlan_hdd_is_type_p2p_action( const u8 *buf, uint32_t len)
 {
     const u8 *ouiPtr;
+
+    if (len < WLAN_HDD_PUBLIC_ACTION_FRAME_SUB_TYPE_OFFSET + 1)
+        return FALSE;
 
     if ( buf[WLAN_HDD_PUBLIC_ACTION_FRAME_CATEGORY_OFFSET] !=
                WLAN_HDD_PUBLIC_ACTION_FRAME ) {
@@ -159,11 +162,11 @@ static bool wlan_hdd_is_type_p2p_action( const u8 *buf )
     return TRUE;
 }
 
-static bool hdd_p2p_is_action_type_rsp( const u8 *buf )
+static bool hdd_p2p_is_action_type_rsp( const u8 *buf, uint32_t len )
 {
     tActionFrmType actionFrmType;
 
-    if ( wlan_hdd_is_type_p2p_action(buf) )
+    if ( wlan_hdd_is_type_p2p_action(buf, len) )
     {
         actionFrmType = buf[WLAN_HDD_PUBLIC_ACTION_FRAME_SUB_TYPE_OFFSET];
         if ( actionFrmType != WLAN_HDD_INVITATION_REQ &&
@@ -589,12 +592,18 @@ static int wlan_hdd_execute_remain_on_channel(hdd_adapter_t *pAdapter,
             return -EINVAL;
         }
 
-        if (REMAIN_ON_CHANNEL_REQUEST == pRemainChanCtx->rem_on_chan_request) {
+        mutex_lock(&cfgState->remain_on_chan_ctx_lock);
+        pRemainChanCtx = cfgState->remain_on_chan_ctx;
+        if ((pRemainChanCtx)&&(REMAIN_ON_CHANNEL_REQUEST ==
+            pRemainChanCtx->rem_on_chan_request)) {
+            mutex_unlock(&cfgState->remain_on_chan_ctx_lock);
             if (eHAL_STATUS_SUCCESS != sme_RegisterMgmtFrame(
                                          WLAN_HDD_GET_HAL_CTX(pAdapter),
                                          sessionId, (SIR_MAC_MGMT_FRAME << 2) |
                                         (SIR_MAC_MGMT_PROBE_REQ << 4), NULL, 0))
                 hddLog(LOGE, FL("sme_RegisterMgmtFrame returned failure"));
+        } else {
+               mutex_unlock(&cfgState->remain_on_chan_ctx_lock);
         }
     }
     else if ( ( WLAN_HDD_SOFTAP== pAdapter->device_mode ) ||
@@ -901,9 +910,13 @@ int __wlan_hdd_cfg80211_remain_on_channel( struct wiphy *wiphy,
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,6,0))
     struct net_device *dev = wdev->netdev;
 #endif
-#ifdef BUILD_DEBUG_VERSION
     hdd_adapter_t *pAdapter = WLAN_HDD_GET_PRIV_PTR( dev );
-#endif
+
+    if (VOS_FTM_MODE == hdd_get_conparam()) {
+        hddLog(LOGE, FL("Command not allowed in FTM mode"));
+        return -EINVAL;
+    }
+
     MTRACE(vos_trace(VOS_MODULE_ID_HDD,
                      TRACE_CODE_HDD_REMAIN_ON_CHANNEL,
                      pAdapter->sessionId, REMAIN_ON_CHANNEL_REQUEST));
@@ -1075,6 +1088,11 @@ int __wlan_hdd_cfg80211_cancel_remain_on_channel( struct wiphy *wiphy,
         VOS_TRACE( VOS_MODULE_ID_HDD, VOS_TRACE_LEVEL_ERROR,
                    "%s: HDD context is not valid", __func__);
         return status;
+    }
+
+    if (VOS_FTM_MODE == hdd_get_conparam()) {
+        hddLog(LOGE, FL("Command not allowed in FTM mode"));
+        return -EINVAL;
     }
 
     /* Remove RoC request inside queue */
@@ -1249,17 +1267,27 @@ int __wlan_hdd_mgmt_tx(struct wiphy *wiphy, struct net_device *dev,
     hdd_remain_on_chan_ctx_t *pRemainChanCtx;
     hdd_context_t *pHddCtx = WLAN_HDD_GET_CTX( pAdapter );
     tANI_U16 extendedWait = 0;
-    tANI_U8 type = WLAN_HDD_GET_TYPE_FRM_FC(buf[0]);
-    tANI_U8 subType = WLAN_HDD_GET_SUBTYPE_FRM_FC(buf[0]);
+    tANI_U8 type;
+    tANI_U8 subType;
     tActionFrmType actionFrmType;
     bool noack = 0;
     int status;
     unsigned long rc;
     hdd_adapter_t *goAdapter;
+    uint32_t mgmt_hdr_len = sizeof(struct ieee80211_hdr_3addr);
 
      MTRACE(vos_trace(VOS_MODULE_ID_HDD,
                       TRACE_CODE_HDD_ACTION, pAdapter->sessionId,
                       pAdapter->device_mode ));
+
+    if (len < mgmt_hdr_len + 1) {
+        hddLog(LOGE, FL("Invalid Length"));
+        return -EINVAL;
+    }
+
+    type = WLAN_HDD_GET_TYPE_FRM_FC(buf[0]);
+    subType = WLAN_HDD_GET_SUBTYPE_FRM_FC(buf[0]);
+
     status = wlan_hdd_validate_context(pHddCtx);
 
     if (0 != status)
@@ -1269,13 +1297,28 @@ int __wlan_hdd_mgmt_tx(struct wiphy *wiphy, struct net_device *dev,
         return status;
     }
 
+    if (VOS_FTM_MODE == hdd_get_conparam()) {
+        hddLog(LOGE, FL("Command not allowed in FTM mode"));
+        return -EINVAL;
+    }
+
     hddLog(VOS_TRACE_LEVEL_INFO, "%s: device_mode = %d type: %d",
                             __func__, pAdapter->device_mode, type);
+
+    if (type == SIR_MAC_MGMT_FRAME && subType == SIR_MAC_MGMT_ACTION &&
+        len > IEEE80211_MIN_ACTION_SIZE)
+        hddLog(LOG1, FL("category: %d, actionID: %d"),
+               buf[WLAN_HDD_PUBLIC_ACTION_FRAME_BODY_OFFSET +
+               WLAN_HDD_PUBLIC_ACTION_FRAME_CATEGORY_OFFSET],
+               buf[WLAN_HDD_PUBLIC_ACTION_FRAME_BODY_OFFSET +
+               WLAN_HDD_PUBLIC_ACTION_FRAME_ACTION_OFFSET]);
 
 #ifdef WLAN_FEATURE_P2P_DEBUG
     if ((type == SIR_MAC_MGMT_FRAME) &&
             (subType == SIR_MAC_MGMT_ACTION) &&
-            wlan_hdd_is_type_p2p_action(&buf[WLAN_HDD_PUBLIC_ACTION_FRAME_BODY_OFFSET]))
+            wlan_hdd_is_type_p2p_action(
+             &buf[WLAN_HDD_PUBLIC_ACTION_FRAME_BODY_OFFSET],
+             len - mgmt_hdr_len))
     {
         actionFrmType = buf[WLAN_HDD_PUBLIC_ACTION_FRAME_TYPE_OFFSET];
         if(actionFrmType >= MAX_P2P_ACTION_FRAME_TYPE)
@@ -1397,7 +1440,9 @@ int __wlan_hdd_mgmt_tx(struct wiphy *wiphy, struct net_device *dev,
         pRemainChanCtx = cfgState->remain_on_chan_ctx;
         if ((type == SIR_MAC_MGMT_FRAME) &&
               (subType == SIR_MAC_MGMT_ACTION) &&
-               hdd_p2p_is_action_type_rsp(&buf[WLAN_HDD_PUBLIC_ACTION_FRAME_BODY_OFFSET]) &&
+               hdd_p2p_is_action_type_rsp(
+                &buf[WLAN_HDD_PUBLIC_ACTION_FRAME_BODY_OFFSET],
+                len - mgmt_hdr_len) &&
                cfgState->remain_on_chan_ctx &&
                cfgState->current_freq == chan->center_freq )
          {
@@ -1524,7 +1569,9 @@ int __wlan_hdd_mgmt_tx(struct wiphy *wiphy, struct net_device *dev,
 
         if ((type == SIR_MAC_MGMT_FRAME) &&
                 (subType == SIR_MAC_MGMT_ACTION) &&
-                (buf[WLAN_HDD_PUBLIC_ACTION_FRAME_OFFSET] == WLAN_HDD_PUBLIC_ACTION_FRAME))
+                wlan_hdd_is_type_p2p_action(
+                 &buf[WLAN_HDD_PUBLIC_ACTION_FRAME_BODY_OFFSET],
+                 len - mgmt_hdr_len))
         {
             actionFrmType = buf[WLAN_HDD_PUBLIC_ACTION_FRAME_TYPE_OFFSET];
             hddLog(LOG1, "Tx Action Frame %u", actionFrmType);
@@ -1641,6 +1688,11 @@ int __wlan_hdd_cfg80211_mgmt_tx_cancel_wait(struct wiphy *wiphy,
                                             struct wireless_dev *wdev,
                                             u64 cookie)
 {
+    if (VOS_FTM_MODE == hdd_get_conparam()) {
+        hddLog(LOGE, FL("Command not allowed in FTM mode"));
+        return -EINVAL;
+    }
+
     return wlan_hdd_cfg80211_cancel_remain_on_channel(wiphy, wdev, cookie);
 }
 #else
@@ -2026,6 +2078,11 @@ struct net_device* __wlan_hdd_add_virtual_intf(
         return ERR_PTR(ret);
     }
 
+    if (VOS_FTM_MODE == hdd_get_conparam()) {
+        hddLog(LOGE, FL("Command not allowed in FTM mode"));
+        return ERR_PTR(-EINVAL);
+    }
+
     MTRACE(vos_trace(VOS_MODULE_ID_HDD,
                      TRACE_CODE_HDD_ADD_VIRTUAL_INTF, NO_SESSION, type));
     /*Allow addition multiple interface for WLAN_HDD_P2P_CLIENT and
@@ -2128,9 +2185,7 @@ int __wlan_hdd_del_virtual_intf(struct wiphy *wiphy, struct net_device *dev)
     struct net_device *dev = wdev->netdev;
 #endif
     hdd_context_t *pHddCtx = (hdd_context_t*) wiphy_priv(wiphy);
-#ifdef BUILD_DEBUG_VERSION
     hdd_adapter_t *pAdapter = WLAN_HDD_GET_PRIV_PTR( dev );
-#endif
     hdd_adapter_t *pVirtAdapter = WLAN_HDD_GET_PRIV_PTR(dev);
     int status;
     ENTER();
@@ -2148,6 +2203,11 @@ int __wlan_hdd_del_virtual_intf(struct wiphy *wiphy, struct net_device *dev)
         VOS_TRACE( VOS_MODULE_ID_HDD, VOS_TRACE_LEVEL_ERROR,
                    "%s: HDD context is not valid", __func__);
         return status;
+    }
+
+    if (VOS_FTM_MODE == hdd_get_conparam()) {
+        hddLog(LOGE, FL("Command not allowed in FTM mode"));
+        return -EINVAL;
     }
 
     wlan_hdd_release_intf_addr( pHddCtx,
@@ -2298,7 +2358,9 @@ void hdd_indicateMgmtFrame( hdd_adapter_t *pAdapter,
 
     /* Get pAdapter from Destination mac address of the frame */
     if ((type == SIR_MAC_MGMT_FRAME) &&
-            (subType != SIR_MAC_MGMT_PROBE_REQ))
+        (subType != SIR_MAC_MGMT_PROBE_REQ) &&
+        !vos_is_macaddr_broadcast(
+         (v_MACADDR_t *)&pbFrames[WLAN_HDD_80211_FRM_DA_OFFSET]))
     {
          pAdapter = hdd_get_adapter_by_macaddr( WLAN_HDD_GET_CTX(pAdapter),
                             &pbFrames[WLAN_HDD_80211_FRM_DA_OFFSET]);
@@ -2370,9 +2432,7 @@ void hdd_indicateMgmtFrame( hdd_adapter_t *pAdapter,
                 vos_mem_compare(&pbFrames[WLAN_HDD_PUBLIC_ACTION_FRAME_OFFSET+2], SIR_MAC_P2P_OUI, SIR_MAC_P2P_OUI_SIZE))
             // P2P action frames
             {
-#ifdef BUILD_DEBUG_VERSION
                 u8 *macFrom = &pbFrames[WLAN_HDD_80211_FRM_DA_OFFSET+6];
-#endif
                 actionFrmType = pbFrames[WLAN_HDD_PUBLIC_ACTION_FRAME_TYPE_OFFSET];
                 hddLog(LOG1, "Rx Action Frame %u", actionFrmType);
 #ifdef WLAN_FEATURE_P2P_DEBUG
