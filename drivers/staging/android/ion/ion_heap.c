@@ -2,7 +2,7 @@
  * drivers/gpu/ion/ion_heap.c
  *
  * Copyright (C) 2011 Google, Inc.
- * Copyright (c) 2011-2016, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2011-2014, The Linux Foundation. All rights reserved.
  *
  * This software is licensed under the terms of the GNU General Public
  * License version 2, as published by the Free Software Foundation, and
@@ -133,7 +133,7 @@ int ion_heap_buffer_zero(struct ion_buffer *buffer)
 
 	for_each_sg(table->sgl, sg, table->nents, i) {
 		struct page *page = sg_page(sg);
-		unsigned long len = sg_dma_len(sg);
+		unsigned long len = sg->length;
 
 		for (j = 0; j < len / PAGE_SIZE; j++) {
 			pages[k++] = page + j;
@@ -192,7 +192,7 @@ static size_t _ion_heap_freelist_drain(struct ion_heap *heap, size_t size,
 		list_del(&buffer->list);
 		heap->free_list_size -= buffer->size;
 		if (skip_pools)
-			buffer->flags |= ION_FLAG_FREED_FROM_SHRINKER;
+			buffer->private_flags |= ION_PRIV_FLAG_SHRINKER_FREE;
 		total_drained += buffer->size;
 		spin_unlock(&heap->free_lock);
 		ion_buffer_destroy(buffer);
@@ -244,8 +244,6 @@ int ion_heap_init_deferred_free(struct ion_heap *heap)
 	struct sched_param param = { .sched_priority = 0 };
 
 	INIT_LIST_HEAD(&heap->free_list);
-	heap->free_list_size = 0;
-	spin_lock_init(&heap->free_lock);
 	init_waitqueue_head(&heap->waitqueue);
 	heap->task = kthread_run(ion_heap_deferred_free, heap,
 				 "%s", heap->name);
@@ -256,6 +254,44 @@ int ion_heap_init_deferred_free(struct ion_heap *heap)
 		return PTR_RET(heap->task);
 	}
 	return 0;
+}
+
+static int ion_heap_shrink(struct shrinker *shrinker, struct shrink_control *sc)
+{
+	struct ion_heap *heap = container_of(shrinker, struct ion_heap,
+					     shrinker);
+	int total = 0;
+	int freed = 0;
+	int to_scan = sc->nr_to_scan;
+
+	if (to_scan == 0)
+		goto out;
+
+	/*
+	 * shrink the free list first, no point in zeroing the memory if we're
+	 * just going to reclaim it
+	 */
+	if (heap->flags & ION_HEAP_FLAG_DEFER_FREE)
+		freed = ion_heap_freelist_drain(heap, to_scan * PAGE_SIZE) /
+				PAGE_SIZE;
+
+	to_scan -= freed;
+	if (to_scan < 0)
+		to_scan = 0;
+
+out:
+	total = ion_heap_freelist_size(heap) / PAGE_SIZE;
+	if (heap->ops->shrink)
+		total += heap->ops->shrink(heap, sc->gfp_mask, to_scan);
+	return total;
+}
+
+void ion_heap_init_shrinker(struct ion_heap *heap)
+{
+	heap->shrinker.shrink = ion_heap_shrink;
+	heap->shrinker.seeks = DEFAULT_SEEKS;
+	heap->shrinker.batch = 0;
+	register_shrinker(&heap->shrinker);
 }
 
 struct ion_heap *ion_heap_create(struct ion_platform_heap *heap_data)
@@ -275,6 +311,9 @@ struct ion_heap *ion_heap_create(struct ion_platform_heap *heap_data)
 		break;
 	case ION_HEAP_TYPE_CHUNK:
 		heap = ion_chunk_heap_create(heap_data);
+		break;
+	case ION_HEAP_TYPE_DMA:
+		heap = ion_cma_heap_create(heap_data);
 		break;
 	default:
 		pr_err("%s: Invalid heap type %d\n", __func__,
@@ -313,6 +352,9 @@ void ion_heap_destroy(struct ion_heap *heap)
 		break;
 	case ION_HEAP_TYPE_CHUNK:
 		ion_chunk_heap_destroy(heap);
+		break;
+	case ION_HEAP_TYPE_DMA:
+		ion_cma_heap_destroy(heap);
 		break;
 	default:
 		pr_err("%s: Invalid heap type %d\n", __func__,

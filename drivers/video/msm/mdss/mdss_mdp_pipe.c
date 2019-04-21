@@ -624,7 +624,7 @@ static struct mdss_mdp_pipe *mdss_mdp_pipe_init(struct mdss_mdp_mixer *mixer,
 		kref_get(&pipe->kref);
 		pr_debug("pipe sharing for pipe=%d\n", pipe->num);
 	} else {
-		pr_err("no %d type pipes available\n", type);
+		pr_err_ratelimited("no %d type pipes available\n", type);
 	}
 
 	return pipe;
@@ -756,6 +756,7 @@ static void mdss_mdp_pipe_free(struct kref *kref)
 	pipe->mfd = NULL;
 	pipe->mixer_left = pipe->mixer_right = NULL;
 	memset(&pipe->scale, 0, sizeof(struct mdp_scale_data));
+	memset(&pipe->req_data, 0, sizeof(pipe->req_data));
 }
 
 static bool mdss_mdp_check_pipe_in_use(struct mdss_mdp_pipe *pipe)
@@ -1295,6 +1296,13 @@ static int mdss_mdp_pipe_solidfill_setup(struct mdss_mdp_pipe *pipe)
 		pipe->bg_color);
 	mdss_mdp_pipe_write(pipe, MDSS_MDP_REG_SSPP_SRC_UNPACK_PATTERN, unpack);
 	mdss_mdp_pipe_write(pipe, MDSS_MDP_REG_SSPP_SRC_ADDR_SW_STATUS, secure);
+	mdss_mdp_pipe_write(pipe, MDSS_MDP_REG_SSPP_SRC_OP_MODE, 0);
+
+	if (pipe->type != MDSS_MDP_PIPE_TYPE_DMA) {
+		mdss_mdp_pipe_write(pipe, MDSS_MDP_REG_SCALE_CONFIG, 0);
+		if (pipe->type == MDSS_MDP_PIPE_TYPE_VIG)
+			mdss_mdp_pipe_write(pipe, MDSS_MDP_REG_VIG_OP_MODE, 0);
+	}
 
 	return 0;
 }
@@ -1375,7 +1383,7 @@ int mdss_mdp_pipe_queue_data(struct mdss_mdp_pipe *pipe,
 	}
 
 	if (src_data == NULL) {
-		pr_debug("src_data=%p pipe num=%dx\n",
+		pr_debug("src_data=%pK pipe num=%dx\n",
 				src_data, pipe->num);
 		goto update_nobuf;
 	}

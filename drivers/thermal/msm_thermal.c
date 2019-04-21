@@ -33,6 +33,7 @@
 #include <linux/sysfs.h>
 #include <linux/types.h>
 #include <linux/thermal.h>
+#include <linux/sched/rt.h>
 #include <mach/rpm-regulator.h>
 #include <linux/regulator/rpm-smd-regulator.h>
 #include <linux/regulator/consumer.h>
@@ -97,6 +98,7 @@ static struct kobj_attribute cx_mode_attr;
 static struct kobj_attribute gfx_mode_attr;
 static struct attribute_group cx_attr_gp;
 static struct attribute_group gfx_attr_gp;
+static long *tsens_temp_at_panic;
 
 enum thermal_threshold {
 	HOTPLUG_THRESHOLD_HIGH,
@@ -929,6 +931,23 @@ get_temp_exit:
 	return ret;
 }
 
+static int msm_thermal_panic_callback(struct notifier_block *nfb,
+			unsigned long event, void *data)
+{
+	int i;
+
+	for (i = 0; i < max_tsens_num; i++)
+		therm_get_temp(tsens_id_map[i],
+				THERM_TSENS_ID,
+				&tsens_temp_at_panic[i]);
+
+	return NOTIFY_OK;
+}
+
+static struct notifier_block msm_thermal_panic_notifier = {
+	.notifier_call = msm_thermal_panic_callback,
+};
+
 static int set_threshold(uint32_t zone_id,
 	struct sensor_threshold *threshold)
 {
@@ -1089,6 +1108,10 @@ static void __ref do_core_control(long temp)
 			if (ret)
 				pr_err("Error %d online core %d\n",
 						ret, i);
+			else {
+				struct device *cpu_device = get_cpu_device(i);
+				kobject_uevent(&cpu_device->kobj, KOBJ_ONLINE);
+			}
 			break;
 		}
 	}
@@ -1114,8 +1137,11 @@ static int __ref update_offline_cores(int val)
 		if (ret)
 			pr_err("Unable to offline CPU%d. err:%d\n",
 				cpu, ret);
-		else
+		else {
+			struct device *cpu_device = get_cpu_device(cpu);
+			kobject_uevent(&cpu_device->kobj, KOBJ_OFFLINE);
 			pr_debug("Offlined CPU%d\n", cpu);
+                }
 	}
 	return ret;
 }
@@ -1124,12 +1150,14 @@ static __ref int do_hotplug(void *data)
 {
 	int ret = 0;
 	uint32_t cpu = 0, mask = 0;
+	struct sched_param param = {.sched_priority = MAX_RT_PRIO-2};
 
 	if (!core_control_enabled) {
 		pr_debug("Core control disabled\n");
 		return -EINVAL;
 	}
 
+	sched_setscheduler(current, SCHED_FIFO, &param);
 	while (!kthread_should_stop()) {
 		while (wait_for_completion_interruptible(
 			&hotplug_notify_complete) != 0)
@@ -2466,16 +2494,48 @@ done_cc_nodes:
 	return ret;
 }
 
-int msm_thermal_pre_init(void)
+static void msm_thermal_panic_notifier_init(struct device *dev)
+{
+	int i;
+
+	tsens_temp_at_panic = devm_kzalloc(dev,
+				sizeof(long) * max_tsens_num,
+				GFP_KERNEL);
+	if (!tsens_temp_at_panic) {
+		pr_err("kzalloc failed\n");
+		return;
+	}
+
+	for (i = 0; i < max_tsens_num; i++)
+		tsens_temp_at_panic[i] = LONG_MIN;
+
+	atomic_notifier_chain_register(&panic_notifier_list,
+		&msm_thermal_panic_notifier);
+}
+
+int msm_thermal_pre_init(struct device *dev)
 {
 	int ret = 0;
 
-	tsens_get_max_sensor_num(&max_tsens_num);
+	if (tsens_is_ready() <= 0) {
+		pr_err("Tsens driver is not ready yet\n");
+		return -EPROBE_DEFER;
+	}
+
+	ret = tsens_get_max_sensor_num(&max_tsens_num);
+	if (ret < 0) {
+		pr_err("failed to get max sensor number, err:%d\n", ret);
+		return ret;
+	}
+
 	if (create_sensor_id_map()) {
 		pr_err("Creating sensor id map failed\n");
 		ret = -EINVAL;
 		goto pre_init_exit;
 	}
+
+	if (!tsens_temp_at_panic)
+		msm_thermal_panic_notifier_init(dev);
 
 	if (!thresh) {
 		thresh = kzalloc(
@@ -3251,7 +3311,7 @@ static int msm_thermal_dev_probe(struct platform_device *pdev)
 	struct msm_thermal_data data;
 
 	memset(&data, 0, sizeof(struct msm_thermal_data));
-	ret = msm_thermal_pre_init();
+	ret = msm_thermal_pre_init(&pdev->dev);
 	if (ret) {
 		pr_err("thermal pre init failed. err:%d\n", ret);
 		goto fail;
@@ -3372,9 +3432,13 @@ int __init msm_thermal_device_init(void)
 {
 	return platform_driver_register(&msm_thermal_device_driver);
 }
+arch_initcall(msm_thermal_device_init);
 
 int __init msm_thermal_late_init(void)
 {
+	if (!msm_thermal_probed)
+		return 0;
+
 	if (num_possible_cpus() > 1)
 		msm_thermal_add_cc_nodes();
 	msm_thermal_add_psm_nodes();

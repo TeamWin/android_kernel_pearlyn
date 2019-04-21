@@ -83,8 +83,6 @@ ifeq ($(KERNEL_BUILD), 0)
         ifeq ($(CONFIG_ROME_IF),usb)
                 CONFIG_LINUX_QCMBR :=y
         endif
-	#Flag to enable memdump feature
-	CONFIG_WLAN_FEATURE_MEMDUMP := y
 
 	#Flag to enable offload packets feature
 	CONFIG_WLAN_OFFLOAD_PACKETS := y
@@ -98,7 +96,7 @@ CONFIG_QCOM_ESE_UPLOAD := y
 # Feature flags which are not (currently) configurable via Kconfig
 
 #Whether to build debug version
-BUILD_DEBUG_VERSION := 0
+BUILD_DEBUG_VERSION := 1
 
 #Enable this flag to build driver in diag version
 BUILD_DIAG_VERSION := 1
@@ -346,6 +344,7 @@ HDD_OBJS := 	$(HDD_SRC_DIR)/bap_hdd_main.o \
 		$(HDD_SRC_DIR)/wlan_hdd_main.o \
 		$(HDD_SRC_DIR)/wlan_hdd_mib.o \
 		$(HDD_SRC_DIR)/wlan_hdd_oemdata.o \
+		$(HDD_SRC_DIR)/wlan_hdd_request_manager.o \
 		$(HDD_SRC_DIR)/wlan_hdd_scan.o \
 		$(HDD_SRC_DIR)/wlan_hdd_softap_tx_rx.o \
 		$(HDD_SRC_DIR)/wlan_hdd_tx_rx.o \
@@ -365,10 +364,6 @@ endif
 
 ifeq ($(CONFIG_QCOM_TDLS),y)
 HDD_OBJS +=	$(HDD_SRC_DIR)/wlan_hdd_tdls.o
-endif
-
-ifeq ($(CONFIG_WLAN_FEATURE_MEMDUMP),y)
-HDD_OBJS += $(HDD_SRC_DIR)/wlan_hdd_memdump.o
 endif
 
 ############ EPPING ############
@@ -905,7 +900,6 @@ CDEFINES :=	-DANI_LITTLE_BYTE_ENDIAN \
 		-DWLANTL_DEBUG\
 		-DWLAN_NS_OFFLOAD \
 		-DWLAN_ACTIVEMODE_OFFLOAD_FEATURE \
-		-DWLAN_FEATURE_HOLD_RX_WAKELOCK \
 		-DWLAN_SOFTAP_VSTA_FEATURE \
 		-DWLAN_FEATURE_ROAM_SCAN_OFFLOAD \
 		-DWLAN_FEATURE_GTK_OFFLOAD \
@@ -1129,7 +1123,7 @@ CDEFINES += -DCONFIG_HL_SUPPORT
 endif
 
 #Enable FW logs through ini
-#CDEFINES += -DCONFIG_FW_LOGS_BASED_ON_INI
+CDEFINES += -DCONFIG_FW_LOGS_BASED_ON_INI
 
 #Enable pci read/write config functions
 ifeq ($(CONFIG_ATH_PCI), 1)
@@ -1251,10 +1245,9 @@ CDEFINES += -DWLAN_OPEN_P2P_INTERFACE
 CDEFINES += -DWLAN_ENABLE_SOCIAL_CHANNELS_5G_ONLY
 
 #Enable RX Full re-order OL feature only "LL and NON-MDM platform"
-#Only for ROME3
-#ifeq ($(CONFIG_HIF_PCI), 1)
-#CDEFINES += -DWLAN_FEATURE_RX_FULL_REORDER_OL
-#endif
+ifeq ($(CONFIG_HIF_PCI), 1)
+CDEFINES += -DWLAN_FEATURE_RX_FULL_REORDER_OL
+endif
 endif
 
 #Enable Signed firmware support for split binary format
@@ -1311,12 +1304,12 @@ ifeq ($(CONFIG_LINUX_QCMBR),y)
 CDEFINES += -DLINUX_QCMBR
 endif
 
-ifeq ($(CONFIG_WLAN_FEATURE_MEMDUMP),y)
-CDEFINES += -DWLAN_FEATURE_MEMDUMP
-endif
-
 ifeq ($(CONFIG_WLAN_OFFLOAD_PACKETS),y)
 CDEFINES += -DWLAN_FEATURE_OFFLOAD_PACKETS
+endif
+
+ifeq ($(CONFIG_WLAN_FEATURE_RX_WAKELOCK), y)
+CDEFINES += -DWLAN_FEATURE_HOLD_RX_WAKELOCK
 endif
 
 KBUILD_CPPFLAGS += $(CDEFINES)

@@ -77,12 +77,12 @@ static void sync_timeline_free(struct kref *kref)
 		container_of(kref, struct sync_timeline, kref);
 	unsigned long flags;
 
-	if (obj->ops->release_obj)
-		obj->ops->release_obj(obj);
-
 	spin_lock_irqsave(&sync_timeline_list_lock, flags);
 	list_del(&obj->sync_timeline_list);
 	spin_unlock_irqrestore(&sync_timeline_list_lock, flags);
+
+	if (obj->ops->release_obj)
+		obj->ops->release_obj(obj);
 
 	kfree(obj);
 }
@@ -345,8 +345,21 @@ static int sync_fence_merge_pts(struct sync_fence *dst, struct sync_fence *src)
 			 * the later of the two
 			 */
 			if (dst_pt->parent == src_pt->parent) {
-				if (dst_pt->parent->ops->compare(dst_pt, src_pt)
-						 == -1) {
+				int cmp_val;
+				int (*cmp_fn)
+					(struct sync_pt *, struct sync_pt *);
+
+				cmp_fn = dst_pt->parent->ops->compare;
+				cmp_val = cmp_fn(dst_pt, src_pt);
+
+				/*
+				 * Out-of-order users like oneshot don't follow
+				 * a timeline ordering.
+				 */
+				if (cmp_val != -cmp_fn(src_pt, dst_pt))
+					break;
+
+				if (cmp_val == -1) {
 					struct sync_pt *new_pt =
 						sync_pt_dup(src_pt);
 					if (new_pt == NULL)
@@ -620,7 +633,8 @@ static void sync_pt_log(struct sync_pt *pt)
 
 	pr_cont("\n");
 
-	if (pt->parent->ops->pt_log)
+	/* Show additional details for active fences */
+	if (pt->status == 0 && pt->parent->ops->pt_log)
 		pt->parent->ops->pt_log(pt);
 }
 

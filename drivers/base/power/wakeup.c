@@ -24,6 +24,9 @@
  */
 bool events_check_enabled __read_mostly;
 
+/* If set and the system is suspending, terminate the suspend. */
+static bool pm_abort_suspend __read_mostly;
+
 /*
  * Combined counters of registered wakeup events and wakeup events in progress.
  * They need to be modified together atomically, so it's better to use one
@@ -659,6 +662,22 @@ void pm_wakeup_event(struct device *dev, unsigned int msec)
 }
 EXPORT_SYMBOL_GPL(pm_wakeup_event);
 
+void pm_get_active_wakeup_sources(char *pending_wakeup_source, size_t max)
+{
+	struct wakeup_source *ws;
+	int len = 0;
+	rcu_read_lock();
+	len += snprintf(pending_wakeup_source, max, "Pending Wakeup Sources: ");
+	list_for_each_entry_rcu(ws, &wakeup_sources, entry) {
+		if (ws->active) {
+			len += snprintf(pending_wakeup_source + len, max,
+				"%s ", ws->name);
+		}
+	}
+	rcu_read_unlock();
+}
+EXPORT_SYMBOL_GPL(pm_get_active_wakeup_sources);
+
 static void print_active_wakeup_sources(void)
 {
 	struct wakeup_source *ws;
@@ -710,7 +729,18 @@ bool pm_wakeup_pending(void)
 	if (ret)
 		print_active_wakeup_sources();
 
-	return ret;
+	return ret || pm_abort_suspend;
+}
+
+void pm_system_wakeup(void)
+{
+	pm_abort_suspend = true;
+	freeze_wake();
+}
+
+void pm_wakeup_clear(void)
+{
+	pm_abort_suspend = false;
 }
 
 /**

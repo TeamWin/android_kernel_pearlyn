@@ -375,8 +375,8 @@ static int ip_tunnel_bind_dev(struct net_device *dev)
 	dev->needed_headroom = t_hlen + hlen;
 	mtu -= (dev->hard_header_len + t_hlen);
 
-	if (mtu < 68)
-		mtu = 68;
+	if (mtu < IPV4_MIN_MTU)
+		mtu = IPV4_MIN_MTU;
 
 	return mtu;
 }
@@ -687,7 +687,7 @@ void ip_tunnel_xmit(struct sk_buff *skb, struct net_device *dev,
 	iph->daddr	=	fl4.daddr;
 	iph->saddr	=	fl4.saddr;
 	iph->ttl	=	ttl;
-	__ip_select_ident(iph, &rt->dst, (skb_shinfo(skb)->gso_segs ?: 1) - 1);
+	__ip_select_ident(iph, skb_shinfo(skb)->gso_segs ?: 1);
 
 	iptunnel_xmit(skb, dev);
 	return;

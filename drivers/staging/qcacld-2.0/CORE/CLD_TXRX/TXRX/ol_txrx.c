@@ -272,6 +272,9 @@ ol_txrx_pdev_attach(
     TXRX_STATS_INIT(pdev);
 
     TAILQ_INIT(&pdev->vdev_list);
+    TAILQ_INIT(&pdev->req_list);
+    pdev->req_list_depth = 0;
+    adf_os_spinlock_init(&pdev->req_list_spinlock);
 
     /* do initial set up of the peer ID -> peer object lookup map */
     if (ol_txrx_peer_find_attach(pdev)) {
@@ -708,7 +711,9 @@ A_STATUS ol_txrx_pdev_attach_target(ol_txrx_pdev_handle pdev)
 void
 ol_txrx_pdev_detach(ol_txrx_pdev_handle pdev, int force)
 {
-    int i;
+    int i = 0;
+    struct ol_txrx_stats_req_internal *req;
+
     /*checking to ensure txrx pdev structure is not NULL */
     if (!pdev) {
         TXRX_PRINT(TXRX_PRINT_LEVEL_ERR, "NULL pdev passed to %s\n", __func__);
@@ -719,6 +724,30 @@ ol_txrx_pdev_detach(ol_txrx_pdev_handle pdev, int force)
 
     /* check that the pdev has no vdevs allocated */
     TXRX_ASSERT1(TAILQ_EMPTY(&pdev->vdev_list));
+
+    adf_os_spin_lock_bh(&pdev->req_list_spinlock);
+    if (pdev->req_list_depth > 0)
+        TXRX_PRINT(TXRX_PRINT_LEVEL_ERR,
+            "Warning: the txrx req list is not empty, depth=%d\n",
+            pdev->req_list_depth
+            );
+    TAILQ_FOREACH(req, &pdev->req_list, req_list_elem) {
+        TAILQ_REMOVE(&pdev->req_list, req, req_list_elem);
+        pdev->req_list_depth--;
+        TXRX_PRINT(TXRX_PRINT_LEVEL_ERR,
+            "%d: %p,verbose(%d), concise(%d), up_m(0x%x), reset_m(0x%x)\n",
+            i++,
+            req,
+            req->base.print.verbose,
+            req->base.print.concise,
+            req->base.stats_type_upload_mask,
+            req->base.stats_type_reset_mask
+            );
+        adf_os_mem_free(req);
+    }
+    adf_os_spin_unlock_bh(&pdev->req_list_spinlock);
+
+    adf_os_spinlock_destroy(&pdev->req_list_spinlock);
 
     OL_RX_REORDER_TIMEOUT_CLEANUP(pdev);
 
@@ -1659,6 +1688,31 @@ ol_txrx_get_tx_pending(ol_txrx_pdev_handle pdev_handle)
     return (total - pdev->tx_desc.num_free);
 }
 
+/*
+ * ol_txrx_get_queue_status() - get vdev tx ll queues status
+ * pdev_handle: pdev handle
+ *
+ * Return: A_OK - if all queues are empty
+ *         A_ERROR - if any queue is not empty
+ */
+A_STATUS
+ol_txrx_get_queue_status(ol_txrx_pdev_handle pdev_handle)
+{
+	struct ol_txrx_pdev_t *pdev = (ol_txrx_pdev_handle)pdev_handle;
+	struct ol_txrx_vdev_t *vdev;
+	A_STATUS status = A_OK;
+
+	TAILQ_FOREACH(vdev, &pdev->vdev_list, vdev_list_elem) {
+		if ((vdev->ll_pause.paused_reason & OL_TXQ_PAUSE_REASON_FW) &&
+			 vdev->ll_pause.txq.depth) {
+			status = A_ERROR;
+			break;
+		}
+	}
+
+	return status;
+}
+
 void
 ol_txrx_discard_tx_pending(ol_txrx_pdev_handle pdev_handle)
 {
@@ -1693,12 +1747,6 @@ void ol_txrx_print_level_set(unsigned level)
     g_txrx_print_level = level;
 #endif
 }
-
-struct ol_txrx_stats_req_internal {
-    struct ol_txrx_stats_req base;
-    int serviced; /* state of this request */
-    int offset;
-};
 
 static inline
 u_int64_t OL_TXRX_STATS_PTR_TO_U64(struct ol_txrx_stats_req_internal *req)
@@ -1761,6 +1809,11 @@ ol_txrx_fw_stats_get(
     /* use the non-volatile request object's address as the cookie */
     cookie = OL_TXRX_STATS_PTR_TO_U64(non_volatile_req);
 
+    adf_os_spin_lock_bh(&pdev->req_list_spinlock);
+    TAILQ_INSERT_TAIL(&pdev->req_list, non_volatile_req, req_list_elem);
+    pdev->req_list_depth++;
+    adf_os_spin_unlock_bh(&pdev->req_list_spinlock);
+
     if (htt_h2t_dbg_stats_get(
             pdev->htt_pdev,
             req->stats_type_upload_mask,
@@ -1768,12 +1821,13 @@ ol_txrx_fw_stats_get(
             HTT_H2T_STATS_REQ_CFG_STAT_TYPE_INVALID, 0,
             cookie))
     {
+        adf_os_spin_lock_bh(&pdev->req_list_spinlock);
+        TAILQ_REMOVE(&pdev->req_list, non_volatile_req, req_list_elem);
+        pdev->req_list_depth--;
+        adf_os_spin_unlock_bh(&pdev->req_list_spinlock);
+
         adf_os_mem_free(non_volatile_req);
         return A_ERROR;
-    }
-
-    if (req->wait.blocking) {
-        while (adf_os_mutex_acquire(pdev->osdev, req->wait.sem_ptr)) {}
     }
 
     return A_OK;
@@ -1789,10 +1843,26 @@ ol_txrx_fw_stats_handler(
     enum htt_dbg_stats_status status;
     int length;
     u_int8_t *stats_data;
-    struct ol_txrx_stats_req_internal *req;
+    struct ol_txrx_stats_req_internal *req, *tmp;
     int more = 0;
+    int found = 0;
 
     req = OL_TXRX_U64_TO_STATS_PTR(cookie);
+
+    adf_os_spin_lock_bh(&pdev->req_list_spinlock);
+    TAILQ_FOREACH(tmp, &pdev->req_list, req_list_elem) {
+        if (req == tmp) {
+            found = 1;
+            break;
+        }
+    }
+    adf_os_spin_unlock_bh(&pdev->req_list_spinlock);
+
+    if (!found) {
+        TXRX_PRINT(TXRX_PRINT_LEVEL_ERR,
+            "req(%p) from firmware can't be found in the list\n", req);
+        return;
+    }
 
     do {
         htt_t2h_dbg_stats_hdr_parse(
@@ -1917,10 +1987,16 @@ ol_txrx_fw_stats_handler(
     } while (1);
 
     if (! more) {
-        if (req->base.wait.blocking) {
-            adf_os_mutex_release(pdev->osdev, req->base.wait.sem_ptr);
+        adf_os_spin_lock_bh(&pdev->req_list_spinlock);
+        TAILQ_FOREACH(tmp, &pdev->req_list, req_list_elem) {
+            if (req == tmp) {
+                TAILQ_REMOVE(&pdev->req_list, req, req_list_elem);
+                pdev->req_list_depth--;
+                adf_os_mem_free(req);
+                break;
+            }
         }
-        adf_os_mem_free(req);
+        adf_os_spin_unlock_bh(&pdev->req_list_spinlock);
     }
 }
 
@@ -2239,6 +2315,8 @@ ol_txrx_ipa_uc_op_response(
 {
    if (pdev->ipa_uc_op_cb) {
       pdev->ipa_uc_op_cb(op_msg, pdev->osif_dev);
+   } else {
+      adf_os_mem_free(op_msg);
    }
 }
 

@@ -43,6 +43,7 @@
 #include <ol_rx_reorder.h>     /* ol_rx_reorder_store, etc. */
 #include <ol_rx_reorder_timeout.h> /* OL_RX_REORDER_TIMEOUT_UPDATE */
 #include <ol_rx_defrag.h>      /* ol_rx_defrag_waitlist_flush */
+#include <ol_rx_fwd.h>             /* ol_rx_fwd_check, etc. */
 #include <ol_txrx_internal.h>
 #include <wdi_event.h>
 #ifdef QCA_SUPPORT_SW_TXRX_ENCAP
@@ -687,7 +688,10 @@ ol_rx_offload_deliver_ind_handler(
         peer = ol_txrx_peer_find_by_id(pdev, peer_id);
         if (peer && peer->vdev) {
             vdev = peer->vdev;
-	    OL_RX_OSIF_DELIVER(vdev, peer, head_buf);
+            if (pdev->cfg.is_high_latency)
+                ol_rx_fwd_check(vdev, peer, tid, head_buf);
+            else
+                OL_RX_OSIF_DELIVER(vdev, peer, head_buf);
         } else {
             buf = head_buf;
             while (1) {
@@ -1034,6 +1038,13 @@ ol_rx_in_order_indication_handler(
     htt_pdev_handle htt_pdev = NULL;
     int status;
     adf_nbuf_t head_msdu, tail_msdu = NULL;
+
+    if (tid >= OL_TXRX_NUM_EXT_TIDS) {
+        TXRX_PRINT(TXRX_PRINT_LEVEL_ERR,
+                   "%s:  invalid tid, %u\n", __FUNCTION__, tid);
+        WARN_ON(1);
+        return;
+    }
 
     if (pdev) {
         peer = ol_txrx_peer_find_by_id(pdev, peer_id);

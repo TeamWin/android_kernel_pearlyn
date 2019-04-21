@@ -442,8 +442,7 @@ __limProcessSmeSysReadyInd(tpAniSirGlobal pMac, tANI_U32 *pMsgBuf)
     msg.bodyptr =  pMsgBuf;
     msg.bodyval = 0;
 
-    if (pMac->gDriverType != eDRIVER_TYPE_MFG)
-    {
+    if (ANI_DRIVER_TYPE(pMac) != eDRIVER_TYPE_MFG) {
         peRegisterTLHandle(pMac);
     }
     PELOGW(limLog(pMac, LOGW, FL("sending WDA_SYS_READY_IND msg to HAL"));)
@@ -896,8 +895,7 @@ __limHandleSmeStartBssRequest(tpAniSirGlobal pMac, tANI_U32 *pMsgBuf)
              * */
         limSetRSNieWPAiefromSmeStartBSSReqMessage(pMac,&pSmeStartBssReq->rsnIE,psessionEntry);
 
-        if ((psessionEntry->limSystemRole == eLIM_AP_ROLE)
-            || (psessionEntry->limSystemRole == eLIM_STA_IN_IBSS_ROLE)) {
+        if (LIM_IS_AP_ROLE(psessionEntry) || LIM_IS_IBSS_ROLE(psessionEntry)) {
             psessionEntry->gLimProtectionControl =  pSmeStartBssReq->protEnabled;
             /*each byte will have the following info
              *bit7       bit6    bit5   bit4 bit3   bit2  bit1 bit0
@@ -978,12 +976,10 @@ __limHandleSmeStartBssRequest(tpAniSirGlobal pMac, tANI_U32 *pMsgBuf)
         pMlmStartReq->cbMode = pSmeStartBssReq->cbMode;
         pMlmStartReq->beaconPeriod = psessionEntry->beaconParams.beaconInterval;
 
-        if(psessionEntry->limSystemRole == eLIM_AP_ROLE ){
+        if (LIM_IS_AP_ROLE(psessionEntry)) {
             pMlmStartReq->dtimPeriod = psessionEntry->dtimPeriod;
             pMlmStartReq->wps_state = psessionEntry->wps_state;
-
-        }else
-        {
+        } else {
             if (wlan_cfgGetInt(pMac, WNI_CFG_DTIM_PERIOD, &val) != eSIR_SUCCESS)
                 limLog(pMac, LOGP, FL("could not retrieve DTIM Period"));
             pMlmStartReq->dtimPeriod = (tANI_U8)val;
@@ -1777,8 +1773,8 @@ __limProcessSmeJoinReq(tpAniSirGlobal pMac, tANI_U32 *pMsgBuf)
     tANI_U16            nSize;
     tANI_U8             sessionId;
     tpPESession         psessionEntry = NULL;
-    tANI_U8             smesessionId = 0;
-    tANI_U16            smetransactionId = 0;
+    tANI_U8             smesessionId;
+    tANI_U16            smetransactionId;
     tPowerdBm           localPowerConstraint = 0, regMax = 0;
     tANI_U16            ieLen;
     v_U8_t              *vendorIE;
@@ -1934,14 +1930,10 @@ __limProcessSmeJoinReq(tpAniSirGlobal pMac, tANI_U32 *pMsgBuf)
                     SIR_MAC_CISCO_OUI_SIZE,
                    ((tANI_U8 *)&pSmeJoinReq->bssDescription.ieFields) , ieLen);
 
-        if ( NULL != vendorIE )
-        {
-            limLog(pMac, LOGE,
-                   FL("DUT is trying to connect to Cisco AP"));
+        if (NULL != vendorIE) {
+            limLog(pMac, LOG1, FL("Cisco vendor OUI present"));
             psessionEntry->isCiscoVendorAP = TRUE;
-        }
-        else
-        {
+        } else {
             psessionEntry->isCiscoVendorAP = FALSE;
         }
 
@@ -2111,8 +2103,7 @@ __limProcessSmeJoinReq(tpAniSirGlobal pMac, tANI_U32 *pMsgBuf)
         {
             limLog(pMac, LOGP, FL("call to AllocateMemory "
                                 "failed for mlmJoinReq"));
-            retCode = eSIR_SME_RESOURCES_UNAVAILABLE;
-            goto end;
+            return;
         }
         (void) vos_mem_set((void *) pMlmJoinReq, val, 0);
 
@@ -2380,22 +2371,17 @@ __limProcessSmeReassocReq(tpAniSirGlobal pMac, tANI_U32 *pMsgBuf)
 
    if((psessionEntry = peFindSessionByBssid(pMac,pReassocReq->bssDescription.bssId,&sessionId))==NULL)
     {
-	// Because of wrong bssid in ReAssoc request, we are not able to find
-	// pe session in our list of sessions, this is then sent to upper layer
-	// with sme_session id same as in request. Upper layers then cause a
-	// DISASSOC for sme session (wrong, this should not happen)
-	// Hence:
-	// Ideally we should not return error here to upper layer,
-	// since the request was for some other BSSID, session for which is not
-	// present in our sessions array
-
-	// for IR-063901, an old roam command that is somehow coming after
-	// connection is established with a newer AP. Since older AP is already
-	// removed from our list, hence no session is found, causing disconnect
-	// with new AP instead.
-        limPrintMacAddr(pMac, pReassocReq->bssDescription.bssId, LOGE);
         limLog(pMac, LOGE, FL("Session does not exist for given bssId"));
-	return;
+        limPrintMacAddr(pMac, pReassocReq->bssDescription.bssId, LOGE);
+        retCode = eSIR_SME_INVALID_PARAMETERS;
+
+       limGetSessionInfo(pMac,(tANI_U8*)pMsgBuf, &smeSessionId, &transactionId);
+       psessionEntry = pe_find_session_by_sme_session_id(pMac, smeSessionId);
+
+       if (psessionEntry != NULL)
+                   limHandleSmeJoinResult(pMac, eSIR_SME_INVALID_PARAMETERS,
+                                 eSIR_MAC_UNSPEC_FAILURE_STATUS, psessionEntry);
+       goto end;
     }
 
 #ifdef FEATURE_WLAN_DIAG_SUPPORT
@@ -2727,9 +2713,9 @@ __limProcessSmeDisassocReq(tpAniSirGlobal pMac, tANI_U32 *pMsgBuf)
         goto sendDisassoc;
 
     }
-    limLog(pMac, LOG1, FL("received DISASSOC_REQ message on sessionid %d"
+    limLog(pMac, LOG1, FL("received DISASSOC_REQ message on sessionid %d "
           "Systemrole %d Reason: %u SmeState: %d from: "MAC_ADDRESS_STR),
-          smesessionId,psessionEntry->limSystemRole,
+          smesessionId, GET_LIM_SYSTEM_ROLE(psessionEntry),
           smeDisassocReq.reasonCode, pMac->lim.gLimSmeState,
           MAC_ADDR_ARRAY(smeDisassocReq.peerMacAddr));
 
@@ -2742,7 +2728,7 @@ __limProcessSmeDisassocReq(tpAniSirGlobal pMac, tANI_U32 *pMsgBuf)
     psessionEntry->smeSessionId = smesessionId;
     psessionEntry->transactionId = smetransactionId;
 
-    switch (psessionEntry->limSystemRole)
+    switch (GET_LIM_SYSTEM_ROLE(psessionEntry))
     {
         case eLIM_STA_ROLE:
         case eLIM_BT_AMP_STA_ROLE:
@@ -2832,7 +2818,7 @@ __limProcessSmeDisassocReq(tpAniSirGlobal pMac, tANI_U32 *pMsgBuf)
         default: // eLIM_UNKNOWN_ROLE
             limLog(pMac, LOGE,
                FL("received unexpected SME_DISASSOC_REQ for role %d"),
-               psessionEntry->limSystemRole);
+               GET_LIM_SYSTEM_ROLE(psessionEntry));
 
             retCode = eSIR_SME_UNEXPECTED_REQ_RESULT_CODE;
             disassocTrigger = eLIM_HOST_DISASSOC;
@@ -2941,7 +2927,7 @@ __limProcessSmeDisassocCnf(tpAniSirGlobal pMac, tANI_U32 *pMsgBuf)
         limDiagEventReport(pMac, WLAN_PE_DIAG_DEAUTH_CNF_EVENT, psessionEntry, (tANI_U16)smeDisassocCnf.statusCode, 0);
 #endif //FEATURE_WLAN_DIAG_SUPPORT
 
-    switch (psessionEntry->limSystemRole)
+    switch (GET_LIM_SYSTEM_ROLE(psessionEntry))
     {
         case eLIM_STA_ROLE:
         case eLIM_BT_AMP_STA_ROLE:  //To test reconn
@@ -2965,17 +2951,14 @@ __limProcessSmeDisassocCnf(tpAniSirGlobal pMac, tANI_U32 *pMsgBuf)
         default: // eLIM_UNKNOWN_ROLE
             limLog(pMac, LOGE,
                FL("received unexpected SME_DISASSOC_CNF role %d"),
-               psessionEntry->limSystemRole);
+               GET_LIM_SYSTEM_ROLE(psessionEntry));
 
             return;
     }
 
-
-    if ( (psessionEntry->limSmeState == eLIM_SME_WT_DISASSOC_STATE) ||
-         (psessionEntry->limSmeState == eLIM_SME_WT_DEAUTH_STATE)
-          || (psessionEntry->limSystemRole == eLIM_AP_ROLE )
-     )
-    {
+    if ((psessionEntry->limSmeState == eLIM_SME_WT_DISASSOC_STATE) ||
+        (psessionEntry->limSmeState == eLIM_SME_WT_DEAUTH_STATE) ||
+        LIM_IS_AP_ROLE(psessionEntry)) {
         pStaDs = dphLookupHashEntry(pMac, smeDisassocCnf.peerMacAddr, &aid, &psessionEntry->dph.dphHashTable);
         if (pStaDs == NULL)
         {
@@ -3071,7 +3054,7 @@ __limProcessSmeDeauthReq(tpAniSirGlobal pMac, tANI_U32 *pMsgBuf)
     }
     limLog(pMac, LOG1,FL("received DEAUTH_REQ message on sessionid %d "
       "Systemrole %d with reasoncode %u in limSmestate %d from "
-      MAC_ADDRESS_STR), smesessionId, psessionEntry->limSystemRole,
+      MAC_ADDRESS_STR), smesessionId, GET_LIM_SYSTEM_ROLE(psessionEntry),
       smeDeauthReq.reasonCode, psessionEntry->limSmeState,
       MAC_ADDR_ARRAY(smeDeauthReq.peerMacAddr));
 #ifdef FEATURE_WLAN_DIAG_SUPPORT_LIM //FEATURE_WLAN_DIAG_SUPPORT
@@ -3083,7 +3066,7 @@ __limProcessSmeDeauthReq(tpAniSirGlobal pMac, tANI_U32 *pMsgBuf)
     psessionEntry->transactionId = smetransactionId;
 
 
-    switch (psessionEntry->limSystemRole)
+    switch (GET_LIM_SYSTEM_ROLE(psessionEntry))
     {
         case eLIM_STA_ROLE:
         case eLIM_BT_AMP_STA_ROLE:
@@ -3169,7 +3152,7 @@ __limProcessSmeDeauthReq(tpAniSirGlobal pMac, tANI_U32 *pMsgBuf)
         default:
             limLog(pMac, LOGE,
                FL("received unexpected SME_DEAUTH_REQ for role %X"),
-                psessionEntry->limSystemRole);
+               GET_LIM_SYSTEM_ROLE(psessionEntry));
 
             return;
     } // end switch (pMac->lim.gLimSystemRole)
@@ -3308,12 +3291,13 @@ __limProcessSmeSetContextReq(tpAniSirGlobal pMac, tANI_U32 *pMsgBuf)
 #endif //FEATURE_WLAN_DIAG_SUPPORT
 
 
-    if ((((psessionEntry->limSystemRole == eLIM_STA_ROLE) || (psessionEntry->limSystemRole == eLIM_BT_AMP_STA_ROLE)) &&
+    if (((LIM_IS_STA_ROLE(psessionEntry) ||
+          LIM_IS_BT_AMP_STA_ROLE(psessionEntry)) &&
          (psessionEntry->limSmeState == eLIM_SME_LINK_EST_STATE)) ||
-        (((psessionEntry->limSystemRole == eLIM_STA_IN_IBSS_ROLE) ||
-          (psessionEntry->limSystemRole == eLIM_AP_ROLE)|| (psessionEntry->limSystemRole == eLIM_BT_AMP_AP_ROLE)) &&
-         (psessionEntry->limSmeState == eLIM_SME_NORMAL_STATE)))
-    {
+        ((LIM_IS_IBSS_ROLE(psessionEntry) ||
+          LIM_IS_AP_ROLE(psessionEntry) ||
+          LIM_IS_BT_AMP_AP_ROLE(psessionEntry)) &&
+         (psessionEntry->limSmeState == eLIM_SME_NORMAL_STATE))) {
         // Trigger MLM_SETKEYS_REQ
         pMlmSetKeysReq = vos_mem_malloc(sizeof(tLimMlmSetKeysReq));
         if ( NULL == pMlmSetKeysReq )
@@ -3346,9 +3330,9 @@ __limProcessSmeSetContextReq(tpAniSirGlobal pMac, tANI_U32 *pMsgBuf)
            FL("received SETCONTEXT_REQ message sessionId=%d"), pMlmSetKeysReq->sessionId););
 #endif
 
-        if(((pSetContextReq->keyMaterial.edType == eSIR_ED_WEP40) || (pSetContextReq->keyMaterial.edType == eSIR_ED_WEP104))
-        && (psessionEntry->limSystemRole == eLIM_AP_ROLE))
-        {
+        if (((pSetContextReq->keyMaterial.edType == eSIR_ED_WEP40) ||
+            (pSetContextReq->keyMaterial.edType == eSIR_ED_WEP104)) &&
+            LIM_IS_AP_ROLE(psessionEntry)) {
             if(pSetContextReq->keyMaterial.key[0].keyLength)
             {
                 tANI_U8 keyId;
@@ -3372,7 +3356,7 @@ __limProcessSmeSetContextReq(tpAniSirGlobal pMac, tANI_U32 *pMsgBuf)
     {
         limLog(pMac, LOGE,
            FL("received unexpected SME_SETCONTEXT_REQ for role %d, state=%X"),
-           psessionEntry->limSystemRole,
+           GET_LIM_SYSTEM_ROLE(psessionEntry),
            psessionEntry->limSmeState);
         limPrintSmeState(pMac, LOGE, psessionEntry->limSmeState);
 
@@ -3473,12 +3457,13 @@ __limProcessSmeRemoveKeyReq(tpAniSirGlobal pMac, tANI_U32 *pMsgBuf)
     }
 
 
-    if ((((psessionEntry->limSystemRole == eLIM_STA_ROLE)|| (psessionEntry->limSystemRole == eLIM_BT_AMP_STA_ROLE))&&
+    if (((LIM_IS_STA_ROLE(psessionEntry) ||
+          LIM_IS_BT_AMP_STA_ROLE(psessionEntry)) &&
          (psessionEntry->limSmeState == eLIM_SME_LINK_EST_STATE)) ||
-        (((psessionEntry->limSystemRole == eLIM_STA_IN_IBSS_ROLE) ||
-          (psessionEntry->limSystemRole == eLIM_AP_ROLE)|| (psessionEntry->limSystemRole == eLIM_BT_AMP_AP_ROLE)) &&
-         (psessionEntry->limSmeState == eLIM_SME_NORMAL_STATE)))
-    {
+        ((LIM_IS_IBSS_ROLE(psessionEntry) ||
+          LIM_IS_AP_ROLE(psessionEntry) ||
+          LIM_IS_BT_AMP_AP_ROLE(psessionEntry)) &&
+         (psessionEntry->limSmeState == eLIM_SME_NORMAL_STATE))) {
         // Trigger MLM_REMOVEKEYS_REQ
         pMlmRemoveKeyReq = vos_mem_malloc(sizeof(tLimMlmRemoveKeyReq));
         if ( NULL == pMlmRemoveKeyReq )
@@ -3511,7 +3496,7 @@ __limProcessSmeRemoveKeyReq(tpAniSirGlobal pMac, tANI_U32 *pMsgBuf)
     {
         limLog(pMac, LOGE,
            FL("received unexpected SME_REMOVEKEY_REQ for role %d, state=%X"),
-           psessionEntry->limSystemRole,
+           GET_LIM_SYSTEM_ROLE(psessionEntry),
            psessionEntry->limSmeState);
         limPrintSmeState(pMac, LOGE, psessionEntry->limSmeState);
 
@@ -3621,11 +3606,10 @@ void limProcessSmeGetAssocSTAsInfo(tpAniSirGlobal pMac, tANI_U32 *pMsgBuf)
         goto limAssocStaEnd;
     }
 
-    if (psessionEntry->limSystemRole != eLIM_AP_ROLE)
-    {
+    if (!LIM_IS_AP_ROLE(psessionEntry)) {
         limLog(pMac, LOGE,
-                        FL("Received unexpected message in state %X, in role %X"),
-                        psessionEntry->limSmeState, psessionEntry->limSystemRole);
+               FL("Received unexpected message in state %X, in role %X"),
+               psessionEntry->limSmeState, GET_LIM_SYSTEM_ROLE(psessionEntry));
         goto limAssocStaEnd;
     }
 
@@ -3725,11 +3709,10 @@ void limProcessSmeGetWPSPBCSessions(tpAniSirGlobal pMac, tANI_U32 *pMsgBuf)
         goto limGetWPSPBCSessionsEnd;
     }
 
-    if (psessionEntry->limSystemRole != eLIM_AP_ROLE)
-    {
+    if (!LIM_IS_AP_ROLE(psessionEntry)) {
         limLog(pMac, LOGE,
-                        FL("Received unexpected message in role %X"),
-                        psessionEntry->limSystemRole);
+               FL("Received unexpected message in role %X"),
+               GET_LIM_SYSTEM_ROLE(psessionEntry));
         goto limGetWPSPBCSessionsEnd;
     }
 
@@ -3786,12 +3769,10 @@ static void
 __limCounterMeasures(tpAniSirGlobal pMac, tpPESession psessionEntry)
 {
     tSirMacAddr mac = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
-    if ( (psessionEntry->limSystemRole == eLIM_AP_ROLE) || (psessionEntry->limSystemRole == eLIM_BT_AMP_AP_ROLE)
-        || (psessionEntry->limSystemRole == eLIM_BT_AMP_STA_ROLE) )
-
+    if (LIM_IS_AP_ROLE(psessionEntry) || LIM_IS_BT_AMP_AP_ROLE(psessionEntry) ||
+        LIM_IS_BT_AMP_STA_ROLE(psessionEntry))
         limSendDisassocMgmtFrame(pMac, eSIR_MAC_MIC_FAILURE_REASON, mac, psessionEntry, FALSE);
-
-};
+}
 
 
 void
@@ -3862,8 +3843,7 @@ __limHandleSmeStopBssRequest(tpAniSirGlobal pMac, tANI_U32 *pMsgBuf)
 
 
     if ((psessionEntry->limSmeState != eLIM_SME_NORMAL_STATE) ||    /* Added For BT -AMP Support */
-        (psessionEntry->limSystemRole == eLIM_STA_ROLE ))
-    {
+        LIM_IS_STA_ROLE(psessionEntry)) {
         /**
          * Should not have received STOP_BSS_REQ in states
          * other than 'normal' state or on STA in Infrastructure
@@ -3871,15 +3851,14 @@ __limHandleSmeStopBssRequest(tpAniSirGlobal pMac, tANI_U32 *pMsgBuf)
          */
         limLog(pMac, LOGE,
            FL("received unexpected SME_STOP_BSS_REQ in state %X, for role %d"),
-           psessionEntry->limSmeState, psessionEntry->limSystemRole);
+           psessionEntry->limSmeState, GET_LIM_SYSTEM_ROLE(psessionEntry));
         limPrintSmeState(pMac, LOGE, psessionEntry->limSmeState);
         /// Send Stop BSS response to host
         limSendSmeRsp(pMac, eWNI_SME_STOP_BSS_RSP, eSIR_SME_UNEXPECTED_REQ_RESULT_CODE,smesessionId,smetransactionId);
         return;
     }
 
-    if (psessionEntry->limSystemRole == eLIM_AP_ROLE )
-    {
+    if (LIM_IS_AP_ROLE(psessionEntry)) {
         limWPSPBCClose(pMac, psessionEntry);
     }
     PELOGW(limLog(pMac, LOGW, FL("RECEIVED STOP_BSS_REQ with reason code=%d"), stopBssReq.reasonCode);)
@@ -3894,8 +3873,8 @@ __limHandleSmeStopBssRequest(tpAniSirGlobal pMac, tANI_U32 *pMsgBuf)
     psessionEntry->transactionId = smetransactionId;
 
     /* BTAMP_STA and STA_IN_IBSS should NOT send Disassoc frame */
-    if ( (eLIM_STA_IN_IBSS_ROLE != psessionEntry->limSystemRole) && (eLIM_BT_AMP_STA_ROLE != psessionEntry->limSystemRole) )
-    {
+    if (!LIM_IS_IBSS_ROLE(psessionEntry) &&
+        !LIM_IS_BT_AMP_STA_ROLE(psessionEntry)) {
         tSirMacAddr   bcAddr = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
         if ((stopBssReq.reasonCode == eSIR_SME_MIC_COUNTER_MEASURES))
             // Send disassoc all stations associated thru TKIP
@@ -4035,11 +4014,14 @@ __limProcessSmeAssocCnfNew(tpAniSirGlobal pMac, tANI_U32 msgType, tANI_U32 *pMsg
         goto end;
     }
 
-    if ( ((psessionEntry->limSystemRole != eLIM_AP_ROLE) && (psessionEntry->limSystemRole != eLIM_BT_AMP_AP_ROLE)) ||
-         ((psessionEntry->limSmeState != eLIM_SME_NORMAL_STATE) && (psessionEntry->limSmeState != eLIM_SME_NORMAL_CHANNEL_SCAN_STATE)))
-    {
-        limLog(pMac, LOGE, FL("Received unexpected message %X in state %X, in role %X"),
-               msgType, psessionEntry->limSmeState, psessionEntry->limSystemRole);
+    if ((!LIM_IS_AP_ROLE(psessionEntry) &&
+         !LIM_IS_BT_AMP_AP_ROLE(psessionEntry)) ||
+        ((psessionEntry->limSmeState != eLIM_SME_NORMAL_STATE) &&
+        (psessionEntry->limSmeState != eLIM_SME_NORMAL_CHANNEL_SCAN_STATE))) {
+        limLog(pMac, LOGE,
+               FL("Received unexpected message %X in state %X, in role %X"),
+               msgType, psessionEntry->limSmeState,
+               GET_LIM_SYSTEM_ROLE(psessionEntry));
         goto end;
     }
 
@@ -4176,8 +4158,8 @@ __limProcessSmeAddtsReq(tpAniSirGlobal pMac, tANI_U32 *pMsgBuf)
            pSirAddts->req.tspec.tsinfo.traffic.tsid,
            pSirAddts->req.tspec.tsinfo.traffic.userPrio);)
 
-    if ((psessionEntry->limSystemRole != eLIM_STA_ROLE)&&(psessionEntry->limSystemRole != eLIM_BT_AMP_STA_ROLE))
-    {
+    if (!LIM_IS_STA_ROLE(psessionEntry) &&
+        !LIM_IS_BT_AMP_STA_ROLE(psessionEntry)) {
         PELOGE(limLog(pMac, LOGE, "AddTs received on AP - ignoring");)
         limSendSmeAddtsRsp(pMac, pSirAddts->rspReqd, eSIR_FAILURE, psessionEntry, pSirAddts->req.tspec,
                 smesessionId,smetransactionId);
@@ -4443,9 +4425,10 @@ limProcessSmeAddtsRspTimeout(tpAniSirGlobal pMac, tANI_U32 param)
         return;
     }
 
-    if (  (psessionEntry->limSystemRole != eLIM_STA_ROLE) && (psessionEntry->limSystemRole != eLIM_BT_AMP_STA_ROLE)   )
-    {
-        limLog(pMac, LOGW, "AddtsRspTimeout in non-Sta role (%d)", psessionEntry->limSystemRole);
+    if (!LIM_IS_STA_ROLE(psessionEntry) &&
+        !LIM_IS_BT_AMP_STA_ROLE(psessionEntry)) {
+        limLog(pMac, LOGW, "AddtsRspTimeout in non-Sta role (%d)",
+               GET_LIM_SYSTEM_ROLE(psessionEntry));
         pMac->lim.gLimAddtsSent = false;
         return;
     }
@@ -6034,7 +6017,7 @@ limProcessSmeChannelChangeRequest(tpAniSirGlobal pMac, tANI_U32 *pMsg)
         return;
     }
 
-    if (eLIM_AP_ROLE == psessionEntry->limSystemRole)
+    if (LIM_IS_AP_ROLE(psessionEntry))
        psessionEntry->channelChangeReasonCode = LIM_SWITCH_CHANNEL_SAP_DFS;
     else
        psessionEntry->channelChangeReasonCode = LIM_SWITCH_CHANNEL_OPERATION;
@@ -6409,6 +6392,21 @@ limProcessUpdateAddIEs(tpAniSirGlobal pMac, tANI_U32 *pMsg)
                 tANI_U16 new_length = pUpdateAddIEs->updateIE.ieBufferlength +
                                 psessionEntry->addIeParams.probeRespDataLen;
                 tANI_U8 *new_ptr = vos_mem_malloc(new_length);
+                /* Multiple back to back append commands
+                 * can lead to a huge length.So, check
+                 * for the validity of the length.
+                 */
+                if (psessionEntry->addIeParams.probeRespDataLen >
+                     (USHRT_MAX - pUpdateAddIEs->updateIE.ieBufferlength))
+                {
+                    limLog(pMac, LOGE,
+                           FL("IE Length overflow, curr:%d, new:%d."),
+                           psessionEntry->addIeParams.probeRespDataLen,
+                           pUpdateAddIEs->updateIE.ieBufferlength);
+                    vos_mem_free(pUpdateAddIEs->updateIE.pAdditionIEBuffer);
+                    pUpdateAddIEs->updateIE.pAdditionIEBuffer = NULL;
+                    return;
+                }
                 if (NULL == new_ptr)
                 {
                     limLog(pMac, LOGE, FL("Memory allocation failed."));
@@ -6519,11 +6517,9 @@ limProcessSmeDfsCsaIeRequest(tpAniSirGlobal pMac, tANI_U32 *pMsg)
         return;
     }
 
-    if (psessionEntry->valid &&
-        eLIM_AP_ROLE != psessionEntry->limSystemRole)
-    {
+    if (psessionEntry->valid && !LIM_IS_AP_ROLE(psessionEntry)) {
         limLog(pMac, LOGE, FL("Invalid SystemRole %d"),
-               psessionEntry->limSystemRole);
+               GET_LIM_SYSTEM_ROLE(psessionEntry));
         return;
     }
 

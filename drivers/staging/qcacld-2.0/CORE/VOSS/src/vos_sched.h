@@ -424,6 +424,7 @@ typedef struct _VosContextType
    v_VOID_t    *cfg_ctx;
 
    volatile v_U8_t    isLoadUnloadInProgress;
+   volatile v_U8_t    is_unload_in_progress;
 
    /* SSR re-init in progress */
    volatile v_U8_t     isReInitInProgress;
@@ -656,6 +657,7 @@ VOS_STATUS vos_watchdog_close ( v_PVOID_t pVosContext );
 VOS_STATUS vos_mq_init(pVosMqType pMq);
 void vos_mq_deinit(pVosMqType pMq);
 void vos_mq_put(pVosMqType pMq, pVosMsgWrapper pMsgWrapper);
+void vos_mq_put_front(pVosMqType mq, pVosMsgWrapper msg_wrapper);
 pVosMsgWrapper vos_mq_get(pVosMqType pMq);
 v_BOOL_t vos_is_mq_empty(pVosMqType pMq);
 pVosSchedContext get_vos_sched_ctxt(void);
@@ -675,6 +677,10 @@ void vos_ssr_protect_init(void);
 void vos_ssr_protect(const char *caller_func);
 void vos_ssr_unprotect(const char *caller_func);
 bool vos_is_ssr_ready(const char *caller_func);
+
+void vos_load_unload_protect(const char *caller_func);
+void vos_load_unload_unprotect(const char *caller_func);
+bool vos_is_load_unload_ready(const char *caller_func);
 int vos_get_gfp_flags(void);
 
 #define vos_wait_for_work_thread_completion(func) vos_is_ssr_ready(func)

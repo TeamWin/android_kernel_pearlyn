@@ -1214,27 +1214,31 @@ int gpiochip_add(struct gpio_chip *chip)
 		}
 	}
 
+	spin_unlock_irqrestore(&gpio_lock, flags);
+
+	if (status)
+		goto fail;
+
 #ifdef CONFIG_PINCTRL
 	INIT_LIST_HEAD(&chip->pin_ranges);
 #endif
 
 	of_gpiochip_add(chip);
 
-unlock:
-	spin_unlock_irqrestore(&gpio_lock, flags);
-
-	if (status)
-		goto fail;
-
 	status = gpiochip_export(chip);
-	if (status)
+	if (status) {
+		of_gpiochip_remove(chip);
 		goto fail;
+	}
 
 	pr_debug("gpiochip_add: registered GPIOs %d to %d on device: %s\n",
 		chip->base, chip->base + chip->ngpio - 1,
 		chip->label ? : "generic");
 
 	return 0;
+
+unlock:
+	spin_unlock_irqrestore(&gpio_lock, flags);
 fail:
 	/* failures here can mean systems won't boot... */
 	pr_err("gpiochip_add: gpios %d..%d (%s) failed to register\n",
@@ -1628,16 +1632,20 @@ static int gpiod_direction_input(struct gpio_desc *desc)
 	int			status = -EINVAL;
 	int			offset;
 
-	if (!desc) {
+	if (!desc || !desc->chip) {
 		pr_warn("%s: invalid GPIO\n", __func__);
 		return -EINVAL;
 	}
 
+	chip = desc->chip;
+	if (!chip->get || !chip->direction_input) {
+		pr_warn("%s: missing get() or direction_input() operations\n",
+			__func__);
+		return -EIO;
+	}
+
 	spin_lock_irqsave(&gpio_lock, flags);
 
-	chip = desc->chip;
-	if (!chip || !chip->get || !chip->direction_input)
-		goto fail;
 	status = gpio_ensure_requested(desc);
 	if (status < 0)
 		goto fail;
@@ -1689,7 +1697,7 @@ static int gpiod_direction_output(struct gpio_desc *desc, int value)
 	int			status = -EINVAL;
 	int offset;
 
-	if (!desc) {
+	if (!desc || !desc->chip) {
 		pr_warn("%s: invalid GPIO\n", __func__);
 		return -EINVAL;
 	}
@@ -1702,11 +1710,15 @@ static int gpiod_direction_output(struct gpio_desc *desc, int value)
 	if (!value && test_bit(FLAG_OPEN_SOURCE,  &desc->flags))
 		return gpiod_direction_input(desc);
 
+	chip = desc->chip;
+	if (!chip->set || !chip->direction_output) {
+		pr_warn("%s: missing set() or direction_output() operations\n",
+			__func__);
+		return -EIO;
+	}
+
 	spin_lock_irqsave(&gpio_lock, flags);
 
-	chip = desc->chip;
-	if (!chip || !chip->set || !chip->direction_output)
-		goto fail;
 	status = gpio_ensure_requested(desc);
 	if (status < 0)
 		goto fail;
@@ -1755,6 +1767,9 @@ EXPORT_SYMBOL_GPL(gpio_direction_output);
  * gpio_set_debounce - sets @debounce time for a @gpio
  * @gpio: the gpio to set debounce time
  * @debounce: debounce time is microseconds
+ *
+ * returns -ENOTSUPP if the controller does not support setting
+ * debounce.
  */
 static int gpiod_set_debounce(struct gpio_desc *desc, unsigned debounce)
 {
@@ -1763,16 +1778,19 @@ static int gpiod_set_debounce(struct gpio_desc *desc, unsigned debounce)
 	int			status = -EINVAL;
 	int			offset;
 
-	if (!desc) {
+	if (!desc || !desc->chip) {
 		pr_warn("%s: invalid GPIO\n", __func__);
 		return -EINVAL;
 	}
 
-	spin_lock_irqsave(&gpio_lock, flags);
-
 	chip = desc->chip;
-	if (!chip || !chip->set || !chip->set_debounce)
-		goto fail;
+	if (!chip->set || !chip->set_debounce) {
+		pr_debug("%s: missing set() or set_debounce() operations\n",
+			__func__);
+		return -ENOTSUPP;
+	}
+
+	spin_lock_irqsave(&gpio_lock, flags);
 
 	status = gpio_ensure_requested(desc);
 	if (status < 0)

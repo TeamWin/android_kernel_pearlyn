@@ -38,6 +38,7 @@
 #include "sirApi.h"
 #include "sirMacProtDef.h"
 #include "csrLinkList.h"
+#include <dot11f_rsn_max_len.h>
 
 typedef enum
 {
@@ -373,10 +374,9 @@ typedef struct tagCsrEseCckmInfo
 #endif
 
 #if defined(FEATURE_WLAN_ESE) && defined(FEATURE_WLAN_ESE_UPLOAD)
-#define CSR_DOT11F_IE_RSN_MAX_LEN   (114)  /*TODO: duplicate one in dot11f.h */
 typedef struct tagCsrEseCckmIe
 {
-    tANI_U8 cckmIe[CSR_DOT11F_IE_RSN_MAX_LEN];
+    tANI_U8 cckmIe[DOT11F_IE_RSN_MAX_LEN];
     tANI_U8 cckmIeLen;
 } tCsrEseCckmIe;
 #endif /* FEATURE_WLAN_ESE && FEATURE_WLAN_ESE_UPLOAD */
@@ -618,6 +618,7 @@ typedef enum
     eCSR_ROAM_RESULT_ADD_TDLS_PEER,
     eCSR_ROAM_RESULT_UPDATE_TDLS_PEER,
     eCSR_ROAM_RESULT_DELETE_TDLS_PEER,
+    eCSR_ROAM_TDLS_CHECK_BMPS,
     eCSR_ROAM_RESULT_TEARDOWN_TDLS_PEER_IND,
     eCSR_ROAM_RESULT_DELETE_ALL_TDLS_PEER_IND,
     eCSR_ROAM_RESULT_LINK_ESTABLISH_REQ_RSP,
@@ -1536,6 +1537,7 @@ typedef struct tagCsrLinkEstablishParams
     tSirMacAddr peerMac;
     tANI_U8 uapsdQueues;
     tANI_U8 maxSp;
+    uint8_t qos;
     tANI_U8 isBufSta;
     tANI_U8 isOffChannelSupported;
     tANI_U8 isResponder;

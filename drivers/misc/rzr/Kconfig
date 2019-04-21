@@ -3,7 +3,17 @@ config RZR_DEVMODE
 	depends on ARCH_APQ8084
 	default n
 
+config RZR_LED
+	bool "Razer Led Control"
+	depends on ARCH_APQ8084
+	default n
+
 config RZR_FILTER
-	bool "Razer Filter"
+	bool "Razer Filter for Serval Controller"
+	depends on ARCH_APQ8084
+	default n
+
+config RZR_HDMI_EDID
+	bool "Razer HDMI EDID"
 	depends on ARCH_APQ8084
 	default n

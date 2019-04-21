@@ -89,6 +89,7 @@
 #include <linux/rcupdate.h>
 #include <linux/times.h>
 #include <linux/slab.h>
+#include <linux/jhash.h>
 #include <net/dst.h>
 #include <net/net_namespace.h>
 #include <net/protocol.h>
@@ -464,39 +465,23 @@ static struct neighbour *ipv4_neigh_lookup(const struct dst_entry *dst,
 	return neigh_create(&arp_tbl, pkey, dev);
 }
 
-/*
- * Peer allocation may fail only in serious out-of-memory conditions.  However
- * we still can generate some output.
- * Random ID selection looks a bit dangerous because we have no chances to
- * select ID being unique in a reasonable period of time.
- * But broken packet identifier may be better than no packet at all.
- */
-static void ip_select_fb_ident(struct iphdr *iph)
+atomic_t *ip_idents __read_mostly;
+EXPORT_SYMBOL(ip_idents);
+
+void __ip_select_ident(struct iphdr *iph, int segs)
 {
-	static DEFINE_SPINLOCK(ip_fb_id_lock);
-	static u32 ip_fallback_id;
-	u32 salt;
+	static u32 ip_idents_hashrnd __read_mostly;
+	static bool hashrnd_initialized = false;
+	u32 hash, id;
 
-	spin_lock_bh(&ip_fb_id_lock);
-	salt = secure_ip_id((__force __be32)ip_fallback_id ^ iph->daddr);
-	iph->id = htons(salt & 0xFFFF);
-	ip_fallback_id = salt;
-	spin_unlock_bh(&ip_fb_id_lock);
-}
-
-void __ip_select_ident(struct iphdr *iph, struct dst_entry *dst, int more)
-{
-	struct net *net = dev_net(dst->dev);
-	struct inet_peer *peer;
-
-	peer = inet_getpeer_v4(net->ipv4.peers, iph->daddr, 1);
-	if (peer) {
-		iph->id = htons(inet_getid(peer, more));
-		inet_putpeer(peer);
-		return;
+	if (unlikely(!hashrnd_initialized)) {
+		hashrnd_initialized = true;
+		get_random_bytes(&ip_idents_hashrnd, sizeof(ip_idents_hashrnd));
 	}
 
-	ip_select_fb_ident(iph);
+	hash = jhash_1word((__force u32)iph->daddr, ip_idents_hashrnd);
+	id = ip_idents_reserve(hash, segs);
+	iph->id = htons(id);
 }
 EXPORT_SYMBOL(__ip_select_ident);
 
@@ -856,6 +841,10 @@ static int ip_error(struct sk_buff *skb)
 	struct net *net;
 	bool send;
 	int code;
+
+	/* IP on this device is disabled. */
+	if (!in_dev)
+		goto out;
 
 	net = dev_net(rt->dst.dev);
 	if (!IN_DEV_FORWARD(in_dev)) {
@@ -1869,6 +1858,18 @@ static struct rtable *__mkroute_output(const struct fib_result *res,
 		 */
 		if (fi && res->prefixlen < 4)
 			fi = NULL;
+	} else if ((type == RTN_LOCAL) && (orig_oif != 0) &&
+		   (orig_oif != dev_out->ifindex)) {
+		/* For local routes that require a particular output interface
+		 * we do not want to cache the result.  Caching the result
+		 * causes incorrect behaviour when there are multiple source
+		 * addresses on the interface, the end result being that if the
+		 * intended recipient is waiting on that interface for the
+		 * packet he won't receive it because it will be delivered on
+		 * the loopback interface and the IP_PKTINFO ipi_ifindex will
+		 * be set to the loopback interface as well.
+		 */
+		fi = NULL;
 	}
 
 	fnhe = NULL;
@@ -2672,6 +2673,12 @@ struct ip_rt_acct __percpu *ip_rt_acct __read_mostly;
 int __init ip_rt_init(void)
 {
 	int rc = 0;
+
+	ip_idents = kmalloc(IP_IDENTS_SZ * sizeof(*ip_idents), GFP_KERNEL);
+	if (!ip_idents)
+		panic("IP: failed to allocate ip_idents\n");
+
+	prandom_bytes(ip_idents, IP_IDENTS_SZ * sizeof(*ip_idents));
 
 #ifdef CONFIG_IP_ROUTE_CLASSID
 	ip_rt_acct = __alloc_percpu(256 * sizeof(struct ip_rt_acct), __alignof__(struct ip_rt_acct));

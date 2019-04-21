@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2015, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -332,7 +332,7 @@ struct mdss_pp_res_type {
 	struct mdp_hist_lut_data enhist_disp_cfg[MDSS_BLOCK_DISP_NUM];
 	struct mdp_dither_cfg_data dither_disp_cfg[MDSS_BLOCK_DISP_NUM];
 	struct mdp_gamut_cfg_data gamut_disp_cfg[MDSS_BLOCK_DISP_NUM];
-	uint16_t gamut_tbl[MDSS_BLOCK_DISP_NUM][GAMUT_TOTAL_TABLE_SIZE];
+	uint16_t gamut_tbl[MDSS_BLOCK_DISP_NUM][GAMUT_TOTAL_TABLE_SIZE * 3];
 	u32 hist_data[MDSS_BLOCK_DISP_NUM][HIST_V_SIZE];
 	struct pp_sts_type pp_disp_sts[MDSS_BLOCK_DISP_NUM];
 	/* physical info */
@@ -3164,7 +3164,7 @@ static int pp_hist_enable(struct pp_hist_col_info *hist_info,
 	spin_lock_irqsave(&hist_info->hist_lock, flag);
 	if (hist_info->col_en) {
 		spin_unlock_irqrestore(&hist_info->hist_lock, flag);
-		pr_info("%s Hist collection has already been enabled %p",
+		pr_info("%s Hist collection has already been enabled %pK\n",
 			__func__, hist_info->base);
 		ret = -EINVAL;
 		goto exit;
@@ -3302,7 +3302,7 @@ static int pp_hist_disable(struct pp_hist_col_info *hist_info)
 	spin_lock_irqsave(&hist_info->hist_lock, flag);
 	if (hist_info->col_en == false) {
 		spin_unlock_irqrestore(&hist_info->hist_lock, flag);
-		pr_debug("Histogram already disabled (%p)", hist_info->base);
+		pr_debug("Histogram already disabled (%pK)\n", hist_info->base);
 		ret = -EINVAL;
 		goto exit;
 	}
@@ -3416,7 +3416,7 @@ int mdss_mdp_hist_intr_req(struct mdss_intr *intr, u32 bits, bool en)
 	unsigned long flag;
 	int ret = 0;
 	if (!intr) {
-		pr_err("NULL addr passed, %p", intr);
+		pr_err("NULL addr passed, %pK\n", intr);
 		return -EINVAL;
 	}
 
@@ -4817,6 +4817,7 @@ static void pp_ad_calc_worker(struct work_struct *work)
 	base = mdata->ad_off[ad->calc_hw_num].base;
 
 	if ((ad->cfg.mode == MDSS_AD_MODE_AUTO_STR) && (ad->last_bl == 0)) {
+		complete(&ad->comp);
 		mutex_unlock(&ad->lock);
 		return;
 	}

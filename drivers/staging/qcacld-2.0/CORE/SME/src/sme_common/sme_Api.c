@@ -78,7 +78,6 @@ extern tSirRetStatus uMacPostCtrlMsg(void* pSirGlobal, tSirMbMsg* pMb);
 
 #include <wlan_qct_pal_api.h>
 #define LOG_SIZE 256
-#define READ_MEMORY_DUMP_CMD     9
 #define TL_INIT_STATE            0
 
 static tSelfRecoveryStats gSelfRecoveryStats;
@@ -998,6 +997,7 @@ sme_process_cmd:
                         case eSmeCommandNoAUpdate:
                             csrLLUnlock( &pMac->sme.smeCmdActiveList );
                             p2pProcessNoAReq(pMac,pCommand);
+                            break;
                         case eSmeCommandEnterImps:
                         case eSmeCommandExitImps:
                         case eSmeCommandEnterBmps:
@@ -1137,16 +1137,12 @@ sme_process_cmd:
                         case eSmeCommandTdlsAddPeer:
                         case eSmeCommandTdlsDelPeer:
                         case eSmeCommandTdlsLinkEstablish:
-                            smsLog(pMac, LOG1,
-                                  FL("sending TDLS Command 0x%x to PE"),
-                                  pCommand->command);
-                            csrLLUnlock(&pMac->sme.smeCmdActiveList);
-                            status = csrTdlsProcessCmd(pMac, pCommand);
-                            if(!HAL_STATUS_SUCCESS(status))
                             {
-                                if(csrLLRemoveEntry(&pMac->sme.smeCmdActiveList,
-                                        &pCommand->Link, LL_ACCESS_LOCK))
-                                 csrReleaseCommand(pMac, pCommand);
+                                VOS_TRACE(VOS_MODULE_ID_SME, VOS_TRACE_LEVEL_INFO,
+                                        "sending TDLS Command 0x%x to PE", pCommand->command);
+
+                                csrLLUnlock( &pMac->sme.smeCmdActiveList );
+                                status = csrTdlsProcessCmd( pMac, pCommand );
                             }
                             break ;
 #endif
@@ -1479,7 +1475,7 @@ eHalStatus sme_SetPlmRequest(tHalHandle hHal, tpSirPlmReq pPlmReq)
     eHalStatus status;
     tANI_BOOLEAN ret = eANI_BOOLEAN_FALSE;
     tpAniSirGlobal pMac = PMAC_STRUCT(hHal);
-    tANI_U8 ch_list[WNI_CFG_VALID_CHANNEL_LIST] = {0};
+    tANI_U8 ch_list[WNI_CFG_VALID_CHANNEL_LIST_LEN] = {0};
     tANI_U8 count, valid_count = 0;
     vos_msg_t msg;
 
@@ -2368,35 +2364,11 @@ eHalStatus sme_SetEseBeaconRequest(tHalHandle hHal, const tANI_U8 sessionId,
    if(status != eHAL_STATUS_SUCCESS)
       pSmeRrmContext->eseBcnReqInProgress = FALSE;
 
+   vos_mem_free(pSmeBcnReportReq);
    return status;
 }
 
 #endif /* FEATURE_WLAN_ESE && FEATURE_WLAN_ESE_UPLOAD */
-
-/**
- * sme_process_fw_mem_dump_rsp - process fw memory dump response from WMA
- *
- * @pMac - pointer to MAC handle.
- * @pMsg - pointer to received SME msg.
- *
- * This function process the received SME message and calls the corresponding
- * callback which was already registered with SME.
- */
-#ifdef WLAN_FEATURE_MEMDUMP
-static void sme_process_fw_mem_dump_rsp(tpAniSirGlobal pMac, vos_msg_t* pMsg)
-{
-	if (pMsg->bodyptr) {
-		if (pMac->sme.fw_dump_callback)
-			pMac->sme.fw_dump_callback(pMac->hHdd,
-				(struct fw_dump_rsp*) pMsg->bodyptr);
-		vos_mem_free(pMsg->bodyptr);
-	}
-}
-#else
-static void sme_process_fw_mem_dump_rsp(tpAniSirGlobal pMac, vos_msg_t* pMsg)
-{
-}
-#endif
 
 /*--------------------------------------------------------------------------
 
@@ -2832,7 +2804,7 @@ eHalStatus sme_ProcessMsg(tHalHandle hHal, vos_msg_t* pMsg)
            case eWNI_SME_CH_AVOID_IND:
                 if (pMac->sme.pChAvoidNotificationCb)
                 {
-                   VOS_TRACE(VOS_MODULE_ID_SME, VOS_TRACE_LEVEL_ERROR,
+                   VOS_TRACE(VOS_MODULE_ID_SME, VOS_TRACE_LEVEL_INFO,
                              "%s: CH avoid notification", __func__);
                    pMac->sme.pChAvoidNotificationCb(pMac->hHdd, pMsg->bodyptr);
                 }
@@ -2960,9 +2932,6 @@ eHalStatus sme_ProcessMsg(tHalHandle hHal, vos_msg_t* pMsg)
                 break;
           }
 #endif
-          case eWNI_SME_FW_DUMP_IND:
-               sme_process_fw_mem_dump_rsp(pMac, pMsg);
-               break;
           case eWNI_SME_LOST_LINK_INFO_IND:
                if (pMac->sme.lost_link_info_cb) {
                    pMac->sme.lost_link_info_cb(pMac->hHdd,
@@ -6790,6 +6759,7 @@ eHalStatus smeIssueFastRoamNeighborAPEvent(tHalHandle hHal,
              pUsrCtx = vos_mem_malloc(sizeof(*pUsrCtx));
              if (NULL == pUsrCtx) {
                  smsLog(pMac, LOGE, FL("Memory allocation failed"));
+                 sme_ReleaseGlobalLock( &pMac->sme );
                  return eHAL_STATUS_FAILED_ALLOC;
              }
 
@@ -7252,11 +7222,11 @@ eHalStatus sme_updateP2pIe(tHalHandle hHal, void *p2pIe, tANI_U32 p2pIeLength)
         {
             pMac->p2pContext.probeRspIeLength = p2pIeLength;
 
+            vos_mem_copy((tANI_U8 *)pMac->p2pContext.probeRspIe, p2pIe,
+                         p2pIeLength);
             sirDumpBuf( pMac, SIR_LIM_MODULE_ID, LOG2,
                         pMac->p2pContext.probeRspIe,
                         pMac->p2pContext.probeRspIeLength );
-            vos_mem_copy((tANI_U8 *)pMac->p2pContext.probeRspIe, p2pIe,
-                         p2pIeLength);
         }
 
         //release the lock for the sme object
@@ -8373,10 +8343,8 @@ eHalStatus sme_8023MulticastList (tHalHandle hHal, tANI_U8 sessionId, tpSirRcvFl
         pSession = CSR_GET_SESSION( pMac, sessionId );
     }
 
-    if(pSession == NULL )
-    {
-        VOS_TRACE(VOS_MODULE_ID_SME, VOS_TRACE_LEVEL_ERROR, "%s: Unable to find "
-            "the session Id: %d", __func__, sessionId);
+    if (pSession == NULL) {
+        smsLog(pMac, LOGW, FL("Unable to find the session Id: %d"), sessionId);
         return eHAL_STATUS_FAILURE;
     }
 
@@ -9426,14 +9394,12 @@ eHalStatus sme_UpdateImmediateRoamRssiDiff(tHalHandle hHal,
                TRACE_CODE_SME_RX_HDD_UPDATE_RSSIDIFF, NO_SESSION, 0));
     if ( HAL_STATUS_SUCCESS( status ) )
     {
-#ifdef BUILD_DEBUG_VERSION
         VOS_TRACE(VOS_MODULE_ID_SME, VOS_TRACE_LEVEL_DEBUG,
                      "LFR runtime successfully set immediate roam rssi diff to %d - old value is %d - roam state is %s",
                      nImmediateRoamRssiDiff,
                      pMac->roam.configParam.nImmediateRoamRssiDiff,
                      macTraceGetNeighbourRoamState(
                      pMac->roam.neighborRoamInfo[sessionId].neighborRoamState));
-#endif
         pMac->roam.configParam.nImmediateRoamRssiDiff = nImmediateRoamRssiDiff;
         sme_ReleaseGlobalLock( &pMac->sme );
     }
@@ -9463,14 +9429,12 @@ eHalStatus sme_UpdateRoamRssiDiff(tHalHandle hHal, tANI_U8 sessionId,
     status = sme_AcquireGlobalLock( &pMac->sme );
     if ( HAL_STATUS_SUCCESS( status ) )
     {
-#ifdef BUILD_DEBUG_VERSION
         VOS_TRACE(VOS_MODULE_ID_SME, VOS_TRACE_LEVEL_DEBUG,
                      "LFR runtime successfully set roam rssi diff to %d - old value is %d - roam state is %s",
                      RoamRssiDiff,
                      pMac->roam.configParam.RoamRssiDiff,
                      macTraceGetNeighbourRoamState(
                      pMac->roam.neighborRoamInfo[sessionId].neighborRoamState));
-#endif
         pMac->roam.configParam.RoamRssiDiff = RoamRssiDiff;
         sme_ReleaseGlobalLock( &pMac->sme );
     }
@@ -9537,14 +9501,12 @@ eHalStatus sme_UpdateWESMode(tHalHandle hHal, v_BOOL_t isWESModeEnabled,
     status = sme_AcquireGlobalLock( &pMac->sme );
     if ( HAL_STATUS_SUCCESS( status ) )
     {
-#ifdef BUILD_DEBUG_VERSION
         VOS_TRACE(VOS_MODULE_ID_SME, VOS_TRACE_LEVEL_DEBUG,
                      "LFR runtime successfully set WES Mode to %d - old value is %d - roam state is %s",
                      isWESModeEnabled,
                      pMac->roam.configParam.isWESModeEnabled,
                      macTraceGetNeighbourRoamState(
                      pMac->roam.neighborRoamInfo[sessionId].neighborRoamState));
-#endif
         pMac->roam.configParam.isWESModeEnabled = isWESModeEnabled;
         sme_ReleaseGlobalLock( &pMac->sme );
     }
@@ -9574,14 +9536,12 @@ eHalStatus sme_SetRoamScanControl(tHalHandle hHal, tANI_U8 sessionId,
     status = sme_AcquireGlobalLock( &pMac->sme );
     if ( HAL_STATUS_SUCCESS( status ) )
     {
-#ifdef BUILD_DEBUG_VERSION
         VOS_TRACE(VOS_MODULE_ID_SME, VOS_TRACE_LEVEL_DEBUG,
                     "LFR runtime successfully set roam scan control to %d - old value is %d - roam state is %s",
                      roamScanControl,
                      pMac->roam.configParam.nRoamScanControl,
                      macTraceGetNeighbourRoamState(
                      pMac->roam.neighborRoamInfo[sessionId].neighborRoamState));
-#endif
         pMac->roam.configParam.nRoamScanControl = roamScanControl;
         if ( 0 == roamScanControl)
         {
@@ -9632,6 +9592,17 @@ eHalStatus sme_UpdateIsFastRoamIniFeatureEnabled
              isFastRoamIniFeatureEnabled);
         return eHAL_STATUS_SUCCESS;
     }
+
+  if (smeNeighborMiddleOfRoaming(hHal, sessionId))
+  {
+      VOS_TRACE(VOS_MODULE_ID_SME, VOS_TRACE_LEVEL_INFO,
+                "%s: In middle of roaming isFastRoamIniFeatureEnabled %d",
+                __func__, isFastRoamIniFeatureEnabled);
+      if (!isFastRoamIniFeatureEnabled)
+          pMac->roam.pending_roam_disable = TRUE;
+
+      return eHAL_STATUS_SUCCESS;
+  }
 
   VOS_TRACE(VOS_MODULE_ID_SME, VOS_TRACE_LEVEL_DEBUG,
                      "%s: FastRoamEnabled is changed from %d to %d", __func__,
@@ -10137,14 +10108,12 @@ eHalStatus sme_setNeighborLookupRssiThreshold
                                                   neighborLookupRssiThreshold);
         if (HAL_STATUS_SUCCESS(status))
         {
-#ifdef BUILD_DEBUG_VERSION
             VOS_TRACE(VOS_MODULE_ID_SME, VOS_TRACE_LEVEL_DEBUG,
                       "LFR runtime successfully set Lookup threshold to %d - old value is %d - roam state is %s",
                       neighborLookupRssiThreshold,
                       pMac->roam.configParam.neighborRoamConfig.nNeighborLookupRssiThreshold,
                       macTraceGetNeighbourRoamState(
                       pMac->roam.neighborRoamInfo[sessionId].neighborRoamState));
-#endif
             pMac->roam.configParam.neighborRoamConfig.nNeighborLookupRssiThreshold =
                                             neighborLookupRssiThreshold;
         }
@@ -10211,14 +10180,12 @@ eHalStatus sme_setNeighborReassocRssiThreshold
     {
         pNeighborRoamConfig = &pMac->roam.configParam.neighborRoamConfig;
         pNeighborRoamInfo   = &pMac->roam.neighborRoamInfo[sessionId];
-#ifdef BUILD_DEBUG_VERSION
         VOS_TRACE(VOS_MODULE_ID_SME, VOS_TRACE_LEVEL_DEBUG,
                      "LFR runtime successfully set Reassoc threshold to %d- old value is %d - roam state is %s",
                      neighborReassocRssiThreshold,
                      pMac->roam.configParam.neighborRoamConfig.nNeighborReassocRssiThreshold,
                      macTraceGetNeighbourRoamState(
                      pMac->roam.neighborRoamInfo[sessionId].neighborRoamState));
-#endif
         pNeighborRoamConfig->nNeighborReassocRssiThreshold =
                                       neighborReassocRssiThreshold;
         pNeighborRoamInfo->cfgParams.neighborReassocThreshold =
@@ -10269,14 +10236,12 @@ eHalStatus sme_setNeighborScanRefreshPeriod
     {
         pNeighborRoamConfig = &pMac->roam.configParam.neighborRoamConfig;
         pNeighborRoamInfo   = &pMac->roam.neighborRoamInfo[sessionId];
-#ifdef BUILD_DEBUG_VERSION
         VOS_TRACE(VOS_MODULE_ID_SME, VOS_TRACE_LEVEL_DEBUG,
                      "LFR runtime successfully set roam scan refresh period to %d- old value is %d - roam state is %s",
                      neighborScanResultsRefreshPeriod,
                      pMac->roam.configParam.neighborRoamConfig.nNeighborResultsRefreshPeriod,
                      macTraceGetNeighbourRoamState(
                      pMac->roam.neighborRoamInfo[sessionId].neighborRoamState));
-#endif
         pNeighborRoamConfig->nNeighborResultsRefreshPeriod =
                                   neighborScanResultsRefreshPeriod;
         pNeighborRoamInfo->cfgParams.neighborResultsRefreshPeriod =
@@ -10381,14 +10346,12 @@ eHalStatus sme_UpdateEmptyScanRefreshPeriod(tHalHandle hHal, tANI_U8 sessionId,
     {
         pNeighborRoamConfig = &pMac->roam.configParam.neighborRoamConfig;
         pNeighborRoamInfo   = &pMac->roam.neighborRoamInfo[sessionId];
-#ifdef BUILD_DEBUG_VERSION
         VOS_TRACE(VOS_MODULE_ID_SME, VOS_TRACE_LEVEL_DEBUG,
                      "LFR runtime successfully set roam scan period to %d -old value is %d - roam state is %s",
                      nEmptyScanRefreshPeriod,
                      pMac->roam.configParam.neighborRoamConfig.nEmptyScanRefreshPeriod,
                      macTraceGetNeighbourRoamState(
                      pMac->roam.neighborRoamInfo[sessionId].neighborRoamState));
-#endif
         pNeighborRoamConfig->nEmptyScanRefreshPeriod = nEmptyScanRefreshPeriod;
         pNeighborRoamInfo->cfgParams.emptyScanRefreshPeriod =
                                              nEmptyScanRefreshPeriod;
@@ -10426,14 +10389,13 @@ eHalStatus sme_setNeighborScanMinChanTime(tHalHandle hHal,
     status = sme_AcquireGlobalLock( &pMac->sme );
     if ( HAL_STATUS_SUCCESS( status ) )
     {
-#ifdef BUILD_DEBUG_VERSION
         VOS_TRACE(VOS_MODULE_ID_SME, VOS_TRACE_LEVEL_DEBUG,
                      "LFR runtime successfully set channel min dwell time to %d - old value is %d - roam state is %s",
                      nNeighborScanMinChanTime,
                      pMac->roam.configParam.neighborRoamConfig.nNeighborScanMinChanTime,
                      macTraceGetNeighbourRoamState(
                      pMac->roam.neighborRoamInfo[sessionId].neighborRoamState));
-#endif
+
         pMac->roam.configParam.neighborRoamConfig.nNeighborScanMinChanTime =
                                                        nNeighborScanMinChanTime;
         pMac->roam.neighborRoamInfo[sessionId].cfgParams.minChannelScanTime =
@@ -10468,14 +10430,12 @@ eHalStatus sme_setNeighborScanMaxChanTime(tHalHandle hHal, tANI_U8 sessionId,
     {
         pNeighborRoamConfig = &pMac->roam.configParam.neighborRoamConfig;
         pNeighborRoamInfo   = &pMac->roam.neighborRoamInfo[sessionId];
-#ifdef BUILD_DEBUG_VERSION
         VOS_TRACE(VOS_MODULE_ID_SME, VOS_TRACE_LEVEL_DEBUG,
                      "LFR runtime successfully set channel max dwell time to %d - old value is %d - roam state is %s",
                      nNeighborScanMaxChanTime,
                      pMac->roam.configParam.neighborRoamConfig.nNeighborScanMaxChanTime,
                      macTraceGetNeighbourRoamState(
                      pMac->roam.neighborRoamInfo[sessionId].neighborRoamState));
-#endif
         pNeighborRoamConfig->nNeighborScanMaxChanTime =
                                                   nNeighborScanMaxChanTime;
         pNeighborRoamInfo->cfgParams.maxChannelScanTime =
@@ -10646,7 +10606,6 @@ eHalStatus sme_setNeighborScanPeriod(tHalHandle hHal, tANI_U8 sessionId,
     {
         pNeighborRoamConfig = &pMac->roam.configParam.neighborRoamConfig;
         pNeighborRoamInfo   = &pMac->roam.neighborRoamInfo[sessionId];
-#ifdef BUILD_DEBUG_VERSION
         VOS_TRACE(VOS_MODULE_ID_SME, VOS_TRACE_LEVEL_DEBUG,
                      "LFR runtime successfully set neighbor scan period to %d"
                      " - old value is %d - roam state is %s",
@@ -10654,7 +10613,6 @@ eHalStatus sme_setNeighborScanPeriod(tHalHandle hHal, tANI_U8 sessionId,
                      pMac->roam.configParam.neighborRoamConfig.nNeighborScanTimerPeriod,
                      macTraceGetNeighbourRoamState(
                      pMac->roam.neighborRoamInfo[sessionId].neighborRoamState));
-#endif
         pNeighborRoamConfig->nNeighborScanTimerPeriod = nNeighborScanPeriod;
         pNeighborRoamInfo->cfgParams.neighborScanPeriod = nNeighborScanPeriod;
         sme_ReleaseGlobalLock( &pMac->sme );
@@ -11538,13 +11496,21 @@ eHalStatus sme_GetLinkSpeed(tHalHandle hHal, tSirLinkSpeedInfo *lsReq, void *pls
            pMac->sme.pLinkSpeedIndCb = pCallbackfn;
         }
         /* serialize the req through MC thread */
-        vosMessage.bodyptr = lsReq;
+        vosMessage.bodyptr = vos_mem_malloc(sizeof(*lsReq));
+        if (NULL == vosMessage.bodyptr) {
+           VOS_TRACE(VOS_MODULE_ID_SME, VOS_TRACE_LEVEL_ERROR,
+                     "%s: Memory allocation failed.", __func__);
+                     sme_ReleaseGlobalLock(&pMac->sme);
+           return eHAL_STATUS_E_MALLOC_FAILED;
+        }
+        vos_mem_copy(vosMessage.bodyptr, lsReq, sizeof(*lsReq));
         vosMessage.type    = WDA_GET_LINK_SPEED;
         vosStatus = vos_mq_post_message(VOS_MQ_ID_WDA, &vosMessage);
         if (!VOS_IS_STATUS_SUCCESS(vosStatus))
         {
            VOS_TRACE(VOS_MODULE_ID_SME, VOS_TRACE_LEVEL_ERROR,
                      "%s: Post Link Speed msg fail", __func__);
+           vos_mem_free(vosMessage.bodyptr);
            status = eHAL_STATUS_FAILURE;
         }
         sme_ReleaseGlobalLock(&pMac->sme);
@@ -11606,7 +11572,7 @@ void sme_UpdateEnableSSR(tHalHandle hHal, tANI_BOOLEAN enableSSR)
 /*
  * SME API to stringify bonding mode. (hostapd convention)
  */
-#ifdef BUILD_DEBUG_VERSION
+
 static const char* sme_CBMode2String( tANI_U32 mode)
 {
    switch (mode)
@@ -11632,7 +11598,7 @@ static const char* sme_CBMode2String( tANI_U32 mode)
          return "Unknown";
    }
 }
-#endif
+
 /*
  * SME API to adjust bonding mode to regulatory, dfs nol .. etc.
  *
@@ -13372,7 +13338,6 @@ eHalStatus sme_UpdateDFSScanMode(tHalHandle hHal, tANI_U8 sessionId,
     status = sme_AcquireGlobalLock( &pMac->sme );
     if ( HAL_STATUS_SUCCESS( status ) )
     {
-#ifdef BUILD_DEBUG_VERSION
         VOS_TRACE(VOS_MODULE_ID_SME, VOS_TRACE_LEVEL_DEBUG,
                      "LFR runtime successfully set AllowDFSChannelRoam Mode to "
                      "%d - old value is %d - roam state is %s",
@@ -13380,7 +13345,6 @@ eHalStatus sme_UpdateDFSScanMode(tHalHandle hHal, tANI_U8 sessionId,
                      pMac->roam.configParam.allowDFSChannelRoam,
                      macTraceGetNeighbourRoamState(
                      pMac->roam.neighborRoamInfo[sessionId].neighborRoamState));
-#endif
         pMac->roam.configParam.allowDFSChannelRoam = allowDFSChannelRoam;
         sme_ReleaseGlobalLock( &pMac->sme );
     }
@@ -13537,10 +13501,9 @@ VOS_STATUS sme_UpdateDSCPtoUPMapping( tHalHandle hHal,
             return eHAL_STATUS_FAILURE;
         }
 
-        if ( !pSession->QosMapSet.present )
-        {
-            VOS_TRACE(VOS_MODULE_ID_SME, VOS_TRACE_LEVEL_ERROR,
-                     "%s: QOS Mapping IE not present", __func__);
+        if ( !pSession->QosMapSet.present ) {
+            VOS_TRACE(VOS_MODULE_ID_SME, VOS_TRACE_LEVEL_WARN,
+                     FL("QOS Mapping IE not present"));
             sme_ReleaseGlobalLock( &pMac->sme);
             return eHAL_STATUS_FAILURE;
         }
@@ -13554,7 +13517,6 @@ VOS_STATUS sme_UpdateDSCPtoUPMapping( tHalHandle hHal,
                    if ((pSession->QosMapSet.dscp_range[i][0] == 255) &&
                                 (pSession->QosMapSet.dscp_range[i][1] == 255))
                    {
-                       dscpmapping[j]= 0;
                        VOS_TRACE(VOS_MODULE_ID_SME, VOS_TRACE_LEVEL_ERROR,
                        "%s: User Priority %d is not used in mapping",
                                                              __func__, i);
@@ -13881,52 +13843,6 @@ eHalStatus sme_ResetBssHotlist (tHalHandle hHal,
         sme_ReleaseGlobalLock(&pMac->sme);
     }
     return status;
-}
-
-/**
- * sme_set_ssid_hotlist() - Set the SSID hotlist
- * @hal: SME handle
- * @request: set ssid hotlist request
- *
- * Return: eHalStatus
- */
-eHalStatus
-sme_set_ssid_hotlist(tHalHandle hal,
-		     struct sir_set_ssid_hotlist_request *request)
-{
-	eHalStatus status;
-	VOS_STATUS vstatus;
-	tpAniSirGlobal mac = PMAC_STRUCT(hal);
-	vos_msg_t vos_message;
-	struct sir_set_ssid_hotlist_request *set_req;
-
-	set_req = vos_mem_malloc(sizeof(*set_req));
-	if (!set_req) {
-		VOS_TRACE(VOS_MODULE_ID_SME, VOS_TRACE_LEVEL_ERROR,
-			  "%s: Not able to allocate memory for WDA_EXTSCAN_SET_SSID_HOTLIST_REQ",
-			  __func__);
-		return eHAL_STATUS_FAILURE;
-	}
-
-	*set_req = *request;
-	status = sme_AcquireGlobalLock(&mac->sme);
-	if (eHAL_STATUS_SUCCESS == status) {
-		/* Serialize the req through MC thread */
-		vos_message.bodyptr = set_req;
-		vos_message.type    = WDA_EXTSCAN_SET_SSID_HOTLIST_REQ;
-		vstatus = vos_mq_post_message(VOS_MQ_ID_WDA, &vos_message);
-		sme_ReleaseGlobalLock(&mac->sme);
-		if (!VOS_IS_STATUS_SUCCESS(vstatus)) {
-			vos_mem_free(set_req);
-			status = eHAL_STATUS_FAILURE;
-		}
-	} else {
-		VOS_TRACE(VOS_MODULE_ID_SME, VOS_TRACE_LEVEL_ERROR,
-			  "%s: sme_AcquireGlobalLock error", __func__);
-		vos_mem_free(set_req);
-		status = eHAL_STATUS_FAILURE;
-	}
-	return status;
 }
 
 /* ---------------------------------------------------------------------------
@@ -14524,76 +14440,6 @@ eHalStatus sme_SetLinkLayerStatsIndCB
 
 #endif /* WLAN_FEATURE_LINK_LAYER_STATS */
 
-/**
- * sme_fw_mem_dump_register_cb() - Register fw memory dump callback
- *
- * @hHal - MAC global handle
- * @callback_routine - callback routine from HDD
- *
- * This API is invoked by HDD to register its callback in SME
- *
- * Return: eHalStatus
- */
-#ifdef WLAN_FEATURE_MEMDUMP
-eHalStatus sme_fw_mem_dump_register_cb(tHalHandle hal,
-		void (*callback_routine)(void *cb_context,
-					 struct fw_dump_rsp *rsp))
-{
-	eHalStatus status = eHAL_STATUS_SUCCESS;
-	tpAniSirGlobal pmac = PMAC_STRUCT(hal);
-
-	status = sme_AcquireGlobalLock(&pmac->sme);
-	if (eHAL_STATUS_SUCCESS == status) {
-		pmac->sme.fw_dump_callback = callback_routine;
-		sme_ReleaseGlobalLock(&pmac->sme);
-	} else {
-		VOS_TRACE(VOS_MODULE_ID_SME, VOS_TRACE_LEVEL_ERROR,
-			  FL("sme_AcquireGlobalLock error"));
-	}
-
-	return status;
-}
-#else
-eHalStatus sme_fw_mem_dump_register_cb(tHalHandle hal,
-		void (*callback_routine)(void *cb_context,
-					 struct fw_dump_rsp *rsp))
-{
-	return eHAL_STATUS_SUCCESS;
-}
-#endif /* WLAN_FEATURE_MEMDUMP */
-
-/**
- * sme_fw_mem_dump_unregister_cb() - Unregister fw memory dump callback
- *
- * @hHal - MAC global handle
- *
- * This API is invoked by HDD to unregister its callback in SME
- *
- * Return: eHalStatus
- */
-#ifdef WLAN_FEATURE_MEMDUMP
-eHalStatus sme_fw_mem_dump_unregister_cb(tHalHandle hal)
-{
-	eHalStatus status;
-	tpAniSirGlobal pmac = PMAC_STRUCT(hal);
-
-	status = sme_AcquireGlobalLock(&pmac->sme);
-	if (eHAL_STATUS_SUCCESS == status) {
-		pmac->sme.fw_dump_callback = NULL;
-		sme_ReleaseGlobalLock(&pmac->sme);
-	} else {
-		VOS_TRACE(VOS_MODULE_ID_SME, VOS_TRACE_LEVEL_ERROR,
-			  FL("sme_AcquireGlobalLock error"));
-	}
-
-	return status;
-}
-#else
-eHalStatus sme_fw_mem_dump_unregister_cb(tHalHandle hal)
-{
-	return eHAL_STATUS_SUCCESS;
-}
-#endif /* WLAN_FEATURE_MEMDUMP */
 
 #ifdef WLAN_FEATURE_ROAM_OFFLOAD
 /*--------------------------------------------------------------------------
@@ -14723,80 +14569,6 @@ eHalStatus sme_handle_dfs_chan_scan(tHalHandle hHal, tANI_U8 dfs_flag)
     return status;
 }
 
-/**
- * sme_fw_mem_dump() - Get FW memory dump
- *
- * This API is invoked by HDD to indicate FW to start
- * dumping firmware memory.
- *
- * Return: eHalStatus
- */
-#ifdef WLAN_FEATURE_MEMDUMP
-eHalStatus sme_fw_mem_dump(tHalHandle hHal, void *recvd_req)
-{
-	eHalStatus status = eHAL_STATUS_SUCCESS;
-	VOS_STATUS vos_status = VOS_STATUS_SUCCESS;
-	tpAniSirGlobal pMac = PMAC_STRUCT(hHal);
-	vos_msg_t msg;
-	struct fw_dump_req* send_req;
-	struct fw_dump_seg_req seg_req;
-	int loop;
-
-	send_req = vos_mem_malloc(sizeof(*send_req));
-	if(!send_req) {
-		VOS_TRACE(VOS_MODULE_ID_SME, VOS_TRACE_LEVEL_ERROR,
-			FL("Memory allocation failed for WDA_FW_MEM_DUMP"));
-		return eHAL_STATUS_FAILURE;
-	}
-	vos_mem_copy(send_req, recvd_req, sizeof(*send_req));
-
-	VOS_TRACE(VOS_MODULE_ID_SME, VOS_TRACE_LEVEL_INFO,
-		  FL("request_id:%d num_seg:%d"),
-		  send_req->request_id, send_req->num_seg);
-        VOS_TRACE(VOS_MODULE_ID_SME, VOS_TRACE_LEVEL_INFO,
-		  FL("Segment Information"));
-	for (loop = 0; loop < send_req->num_seg; loop++) {
-		seg_req = send_req->segment[loop];
-		VOS_TRACE(VOS_MODULE_ID_SME, VOS_TRACE_LEVEL_INFO,
-			  FL("seg_number:%d"), loop);
-		VOS_TRACE(VOS_MODULE_ID_SME, VOS_TRACE_LEVEL_INFO,
-			  FL("seg_id:%d start_addr_lo:0x%x start_addr_hi:0x%x"),
-			  seg_req.seg_id, seg_req.seg_start_addr_lo,
-			  seg_req.seg_start_addr_hi);
-		VOS_TRACE(VOS_MODULE_ID_SME, VOS_TRACE_LEVEL_INFO,
-			  FL("seg_length:%d dst_addr_lo:0x%x dst_addr_hi:0x%x"),
-			  seg_req.seg_length, seg_req.dst_addr_lo,
-			  seg_req.dst_addr_hi);
-	}
-
-	if (eHAL_STATUS_SUCCESS == sme_AcquireGlobalLock(&pMac->sme)) {
-		msg.bodyptr = send_req;
-		msg.type = WDA_FW_MEM_DUMP_REQ;
-		msg.reserved = 0;
-
-		vos_status = vos_mq_post_message(VOS_MODULE_ID_WDA, &msg);
-		if (VOS_STATUS_SUCCESS != vos_status) {
-			VOS_TRACE(VOS_MODULE_ID_SME, VOS_TRACE_LEVEL_ERROR,
-				  FL("Not able to post WDA_FW_MEM_DUMP"));
-			vos_mem_free(send_req);
-			status = eHAL_STATUS_FAILURE;
-		}
-		sme_ReleaseGlobalLock(&pMac->sme);
-	} else {
-		VOS_TRACE(VOS_MODULE_ID_SME, VOS_TRACE_LEVEL_ERROR,
-			FL("Failed to acquire SME Global Lock"));
-		vos_mem_free(send_req);
-		status = eHAL_STATUS_FAILURE;
-	}
-
-	return status;
-}
-#else
-eHalStatus sme_fw_mem_dump(tHalHandle hHal, void *recvd_req)
-{
-	return eHAL_STATUS_SUCCESS;
-}
-#endif /* WLAN_FEATURE_MEMDUMP */
 
 /**
  * sme_configure_stats_avg_factor() - function to config avg. stats factor
@@ -15241,21 +15013,21 @@ eHalStatus sme_disable_non_fcc_channel(tHalHandle hal, bool fcc_constraint)
 }
 
 /**
- * smeNeighborRoamIsHandoffInProgress() - Function to know if
- * handoff is in progress
+ * smeNeighborMiddleOfRoaming() - Function to know if
+ * STA is in the middle of roaming states
  * @hal:                Handle returned by macOpen
  * @sessionId: sessionId of the STA session
  *
  * This function is a wrapper to call
- * csrNeighborRoamIsHandoffInProgress to know if handoff is in
- * progress
+ * csrNeighborMiddleOfRoaming to know if
+ * STA is in the middle of roaming states
  *
  * Return: True or False
  *
  */
-bool smeNeighborRoamIsHandoffInProgress(tHalHandle hHal, tANI_U8 sessionId)
+bool smeNeighborMiddleOfRoaming(tHalHandle hHal, tANI_U8 sessionId)
 {
-	return csrNeighborRoamIsHandoffInProgress(PMAC_STRUCT(hHal), sessionId);
+	return csrNeighborMiddleOfRoaming(PMAC_STRUCT(hHal), sessionId);
 }
 
 /**
@@ -15287,3 +15059,43 @@ eHalStatus sme_set_lost_link_info_cb(tHalHandle hal,
 	return status;
 }
 
+/**
+ * sme_delete_all_tdls_peers: send request to delete tdls peers
+ * @hal: handler for HAL
+ * @sessionId: session id
+ *
+ * Functtion send's request to lim to delete tdls peers
+ *
+ * Return: Success: eHAL_STATUS_SUCCESS Failure: Error value
+ */
+eHalStatus sme_delete_all_tdls_peers(tHalHandle hal, uint8_t session_id)
+{
+	struct sir_del_all_tdls_peers *msg;
+	eHalStatus status = eHAL_STATUS_SUCCESS;
+	tpAniSirGlobal p_mac = PMAC_STRUCT(hal);
+	tCsrRoamSession *session = CSR_GET_SESSION(p_mac, session_id);
+
+	msg = vos_mem_malloc(sizeof(*msg));
+	if (NULL == msg) {
+		smsLog(p_mac, LOGE, FL("memory alloc failed"));
+		return eHAL_STATUS_FAILURE;
+	}
+
+	vos_mem_set(msg, sizeof(*msg), 0);
+
+	msg->msg_type = pal_cpu_to_be16((uint16_t)eWNI_SME_DEL_ALL_TDLS_PEERS);
+	msg->msg_len =  pal_cpu_to_be16((uint16_t)sizeof(*msg));
+
+	vos_mem_copy(msg->bssid, session->connectedProfile.bssid,
+			sizeof(tSirMacAddr));
+
+	status = palSendMBMessage(p_mac->hHdd, msg);
+
+	if(status != eHAL_STATUS_SUCCESS) {
+		VOS_TRACE(VOS_MODULE_ID_SME, VOS_TRACE_LEVEL_ERROR,
+			FL("palSendMBMessage Failed"));
+		status = eHAL_STATUS_FAILURE;
+	}
+
+	return status;
+}

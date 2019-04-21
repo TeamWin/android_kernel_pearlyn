@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2014 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012-2017 The Linux Foundation. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -147,7 +147,7 @@ eHalStatus csrTdlsSendMgmtReq(tHalHandle hHal, tANI_U8 sessionId, tCsrTdlsSendMg
 }
 
 /*
- * TDLS request API, called from HDD to add a TDLS peer
+ * TDLS request API, called from HDD to modify an existing TDLS peer
  */
 eHalStatus csrTdlsChangePeerSta(tHalHandle hHal, tANI_U8 sessionId, tSirMacAddr peerMac,
                                 tCsrStaParams *pstaParams)
@@ -156,6 +156,8 @@ eHalStatus csrTdlsChangePeerSta(tHalHandle hHal, tANI_U8 sessionId, tSirMacAddr 
     tSmeCmd *tdlsAddStaCmd ;
     eHalStatus status = eHAL_STATUS_FAILURE ;
 
+    if (NULL == pstaParams)
+        return status;
     //If connected and in Infra. Only then allow this
     if (CSR_IS_SESSION_VALID( pMac, sessionId ) &&
         csrIsConnStateConnectedInfra( pMac, sessionId ) &&
@@ -568,25 +570,50 @@ eHalStatus csrTdlsProcessDelSta( tpAniSirGlobal pMac, tSmeCmd *cmd )
 eHalStatus csrTdlsProcessCmd(tpAniSirGlobal pMac, tSmeCmd *cmd)
 {
     eSmeCommandType  cmdType = cmd->command ;
-    eHalStatus status = eHAL_STATUS_SUCCESS;
+    tANI_BOOLEAN status = eANI_BOOLEAN_TRUE;
     switch(cmdType)
     {
         case eSmeCommandTdlsSendMgmt:
-            status = csrTdlsProcessSendMgmt(pMac, cmd);
+        {
+            status = csrTdlsProcessSendMgmt( pMac, cmd );
+            if(HAL_STATUS_SUCCESS( status ) )
+            {
+               status = eANI_BOOLEAN_FALSE ;
+            }
+        }
         break ;
         case eSmeCommandTdlsAddPeer:
-            status = csrTdlsProcessAddSta(pMac, cmd);
+        {
+            status = csrTdlsProcessAddSta( pMac, cmd );
+            if(HAL_STATUS_SUCCESS( status ) )
+            {
+               status = eANI_BOOLEAN_FALSE ;
+            }
+        }
         break;
         case eSmeCommandTdlsDelPeer:
-            status = csrTdlsProcessDelSta(pMac, cmd);
+        {
+            status = csrTdlsProcessDelSta( pMac, cmd );
+            if(HAL_STATUS_SUCCESS( status ) )
+            {
+               status = eANI_BOOLEAN_FALSE ;
+            }
+        }
         break;
         case eSmeCommandTdlsLinkEstablish:
-            status = csrTdlsProcessLinkEstablish(pMac, cmd);
+        {
+            status = csrTdlsProcessLinkEstablish( pMac, cmd );
+            if(HAL_STATUS_SUCCESS( status ) )
+            {
+               status = eANI_BOOLEAN_FALSE ;
+            }
+        }
         break;
        default:
-           status = eHAL_STATUS_FAILURE;
+       {
             /* TODO: Add defualt handling */
            break ;
+       }
 
     }
     return status ;
@@ -705,8 +732,10 @@ eHalStatus tdlsMsgProcessor(tpAniSirGlobal pMac,  v_U16_t msgType,
             csrRoamCallCallback(pMac, delStaRsp->sessionId, &roamInfo, 0,
                          eCSR_ROAM_TDLS_STATUS_UPDATE,
                                eCSR_ROAM_RESULT_DELETE_TDLS_PEER);
-
-            csrTdlsRemoveSmeCmd(pMac, eSmeCommandTdlsDelPeer) ;
+            csrTdlsRemoveSmeCmd(pMac, eSmeCommandTdlsDelPeer);
+            csrRoamCallCallback(pMac, delStaRsp->sessionId, &roamInfo, 0,
+                            eCSR_ROAM_TDLS_STATUS_UPDATE,
+                            eCSR_ROAM_TDLS_CHECK_BMPS);
         }
         break;
         case eWNI_SME_TDLS_DEL_STA_IND:
@@ -745,6 +774,10 @@ eHalStatus tdlsMsgProcessor(tpAniSirGlobal pMac,  v_U16_t msgType,
         case eWNI_SME_TDLS_LINK_ESTABLISH_RSP:
         {
             tSirTdlsLinkEstablishReqRsp *linkEstablishReqRsp = (tSirTdlsLinkEstablishReqRsp *) pMsgBuf ;
+            vos_mem_copy(&roamInfo.peerMac, linkEstablishReqRsp->peerMac,
+                                            sizeof(tSirMacAddr));
+            roamInfo.staId = (uint8_t)linkEstablishReqRsp->sta_idx;
+            roamInfo.statusCode = linkEstablishReqRsp->statusCode;
             csrRoamCallCallback(pMac, linkEstablishReqRsp->sessionId, &roamInfo, 0,
                          eCSR_ROAM_TDLS_STATUS_UPDATE,
                                eCSR_ROAM_RESULT_LINK_ESTABLISH_REQ_RSP);

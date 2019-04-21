@@ -460,6 +460,7 @@ is_ccmp_pn_replay_attack(void *vos_ctx, struct ieee80211_frame *wh,
 }
 #endif
 
+#define RESERVE_BYTES   100
 static int tlshim_mgmt_rx_process(void *context, u_int8_t *data,
 				       u_int32_t data_len, bool saved_beacon, u_int32_t vdev_id)
 {
@@ -550,6 +551,16 @@ static int tlshim_mgmt_rx_process(void *context, u_int8_t *data,
 					 rx_pkt->pkt_meta.mpdu_hdr_len;
 
     /*
+	 * If the mpdu_data_len is greater than Max (2k), drop the frame
+	 */
+	if (rx_pkt->pkt_meta.mpdu_data_len > WMA_MAX_MGMT_MPDU_LEN) {
+		TLSHIM_LOGE("Data Len %d greater than max, dropping frame",
+			 rx_pkt->pkt_meta.mpdu_data_len);
+		vos_mem_free(rx_pkt);
+		return 0;
+	}
+
+    /*
      * saved_beacon means this beacon is a duplicate of one
      * sent earlier. roamCandidateInd flag is used to indicate to
      * PE that roam scan finished and a better candidate AP
@@ -557,9 +568,28 @@ static int tlshim_mgmt_rx_process(void *context, u_int8_t *data,
      */
 	rx_pkt->pkt_meta.roamCandidateInd = saved_beacon ? 1 : 0;
 	rx_pkt->pkt_meta.sessionId = vdev_id;
-	/* Why not just use rx_event->hdr.buf_len? */
+	/*
+	 * Allocate the memory for this rx packet, add extra 100 bytes for:-
+	 *
+	 * 1.  Filling the missing RSN capabilites by some APs, which fill the
+	 *     RSN IE length as extra 2 bytes but dont fill the IE data with
+	 *     capabilities, resulting in failure in unpack core due to length
+	 *     mismatch. Check sir_validate_and_rectify_ies for more info.
+	 *
+	 * 2.  In the API wma_process_rmf_frame(), the driver trims the CCMP
+	 *     header by overwriting the IEEE header to memory occupied by CCMP
+	 *     header, but an overflow is possible if the memory allocated to
+	 *     frame is less than the sizeof(struct ieee80211_frame) +CCMP
+	 *     HEADER len, so allocating 100 bytes would solve this issue too.
+	 *
+	 * 3.  CCMP header is pointing to orig_hdr +
+	 *     sizeof(struct ieee80211_frame) which could also result in OOB
+	 *     access, if the data len is less than
+	 *     sizeof(struct ieee80211_frame), allocating extra bytes would
+	 *     result in solving this issue too.
+	 */
 	wbuf = adf_nbuf_alloc(NULL,
-			      roundup(hdr->buf_len, 4),
+			      roundup(hdr->buf_len + RESERVE_BYTES, 4),
 			      0, 4, FALSE);
 	if (!wbuf) {
 		TLSHIM_LOGE("%s: Failed to allocate wbuf for mgmt rx len(%u)",
@@ -717,7 +747,12 @@ static int tlshim_mgmt_rx_process(void *context, u_int8_t *data,
 					 IEEE80211_IS_MULTICAST(wh->i_addr1))
 				{
 					efrm = adf_nbuf_data(wbuf) + adf_nbuf_len(wbuf);
-
+					/* Check if frame is invalid length */
+					if (efrm - (uint8_t *)wh <
+					    sizeof(*wh) + vos_get_mmie_size()) {
+						TLSHIM_LOGE("Invalid frame length");
+						return 0;
+					}
 					key_id = (u_int16_t)*(efrm - vos_get_mmie_size() + 2);
 					if (!((key_id == WMA_IGTK_KEY_INDEX_4) ||
 						(key_id == WMA_IGTK_KEY_INDEX_5))) {
@@ -1718,6 +1753,30 @@ VOS_STATUS WLANTL_ClearSTAClient(void *vos_ctx, u_int8_t sta_id)
 	return VOS_STATUS_SUCCESS;
 }
 
+void tl_shim_flush_cache_rx_queue(void)
+{
+    void *vos_ctx = vos_get_global_context(VOS_MODULE_ID_TL, NULL);
+    struct txrx_tl_shim_ctx *tl_shim;
+    u_int8_t sta_id;
+
+    if (!vos_ctx) {
+        TLSHIM_LOGE("%s, Global VOS context is Null\n", __func__);
+        return;
+    }
+
+    tl_shim = vos_get_context(VOS_MODULE_ID_TL, vos_ctx);
+    if (!tl_shim) {
+        TLSHIM_LOGE("%s, tl_shim is NULL\n", __func__);
+        return;
+    }
+
+    TLSHIM_LOGD("%s: called to flush cache rx queue.\n", __func__);
+    for (sta_id = 0; sta_id < WLAN_MAX_STA_COUNT; sta_id++)
+        tl_shim_flush_rx_frames(vos_ctx, tl_shim, sta_id, 1);
+
+    return;
+}
+
 /*
  * Register a station for data service. This API gives flexibility
  * to register different callbacks for different client though it is
@@ -1810,9 +1869,9 @@ VOS_STATUS WLANTL_Start(void *vos_ctx)
 VOS_STATUS WLANTL_Close(void *vos_ctx)
 {
 	struct txrx_tl_shim_ctx *tl_shim;
-#ifdef QCA_LL_TX_FLOW_CT
-	u_int8_t i;
-#endif /* QCA_LL_TX_FLOW_CT */
+	struct tlshim_buf *cache_buf, *tmp;
+	struct tlshim_sta_info *sta_info;
+	u_int16_t i;
 
 	ENTER();
 	tl_shim = vos_get_context(VOS_MODULE_ID_TL, vos_ctx);
@@ -1844,7 +1903,19 @@ VOS_STATUS WLANTL_Close(void *vos_ctx)
 	vos_flush_work(&tl_shim->iapp_work.deferred_work);
 #endif
 	vos_flush_work(&tl_shim->cache_flush_work);
-
+	for (i = 0; i < WLAN_MAX_STA_COUNT; i++) {
+		sta_info = &tl_shim->sta_info[i];
+		adf_os_spin_lock_bh(&tl_shim->bufq_lock);
+		list_for_each_entry_safe(cache_buf, tmp,
+					 &sta_info->cached_bufq, list) {
+			list_del(&cache_buf->list);
+			adf_os_spin_unlock_bh(&tl_shim->bufq_lock);
+			adf_nbuf_free(cache_buf->buf);
+			adf_os_mem_free(cache_buf);
+			adf_os_spin_lock_bh(&tl_shim->bufq_lock);
+		}
+		adf_os_spin_unlock_bh(&tl_shim->bufq_lock);
+	}
 	wdi_in_pdev_detach(((pVosContextType) vos_ctx)->pdev_txrx_ctx, 1);
 	// Delete beacon buffer hanging off tl_shim
 	if (tl_shim->last_beacon_data) {
@@ -1970,7 +2041,7 @@ VOS_STATUS WLANTL_Open(void *vos_ctx, WLANTL_ConfigInfoType *tl_cfg)
 	tl_shim->delay_interval = tl_cfg->uDelayedTriggerFrmInt;
 	tl_shim->enable_rxthread = tl_cfg->enable_rxthread;
 	if (tl_shim->enable_rxthread)
-		TLSHIM_LOGE("TL Shim RX thread enabled");
+		TLSHIM_LOGD("TL Shim RX thread enabled");
 
 	return status;
 }

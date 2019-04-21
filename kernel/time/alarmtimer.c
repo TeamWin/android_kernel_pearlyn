@@ -365,6 +365,8 @@ static int alarmtimer_resume(struct device *dev)
 	if (!rtc)
 		return 0;
 	rtc_timer_cancel(rtc, &rtctimer);
+
+	set_power_on_alarm(power_on_alarm , 1);
 	return 0;
 }
 #else
@@ -833,7 +835,8 @@ static int alarm_timer_nsleep(const clockid_t which_clock, int flags,
 	/* Convert (if necessary) to absolute time */
 	if (flags != TIMER_ABSTIME) {
 		ktime_t now = alarm_bases[type].gettime();
-		exp = ktime_add(now, exp);
+
+		exp = ktime_add_safe(now, exp);
 	}
 
 	if (alarmtimer_do_nsleep(&alarm, exp))

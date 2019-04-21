@@ -256,11 +256,13 @@ struct msm_hs_port {
 	struct pinctrl_state *gpio_state_active;
 	struct pinctrl_state *gpio_state_suspend;
 	bool flow_control;
+	wake_peer_fn wake_peer;
+	bool tx_pending;
 };
 
 static struct of_device_id msm_hs_match_table[] = {
-	{ .compatible = "qcom,msm-hsuart-v14",
-	},
+	{ .compatible = "qcom,msm-hsuart-v14"},
+	{}
 };
 
 
@@ -996,6 +998,7 @@ static void msm_hs_enable_flow_control(struct uart_port *uport)
 	struct msm_hs_port *msm_uport = UARTDM_TO_MSM(uport);
 	unsigned int data;
 
+	MSM_HS_DBG("%s\n", __func__);
 	if (msm_uport->flow_control) {
 		/* Enable RFR line */
 		msm_hs_write(uport, UART_DM_CR, RFR_LOW);
@@ -1018,6 +1021,7 @@ static void msm_hs_disable_flow_control(struct uart_port *uport)
 	 * data while we change the parameters
 	 */
 
+	MSM_HS_DBG("%s\n", __func__);
 	if (msm_uport->flow_control) {
 		data = msm_hs_read(uport, UART_DM_MR1);
 		/* disable auto ready-for-receiving */
@@ -1507,6 +1511,7 @@ static void flip_insert_work(struct work_struct *work)
 	spin_lock_irqsave(&msm_uport->uport.lock, flags);
 	if (msm_uport->rx.buffer_pending == NONE_PENDING) {
 		MSM_HS_ERR("Error: No buffer pending in %s", __func__);
+		spin_unlock_irqrestore(&msm_uport->uport.lock, flags);
 		return;
 	}
 	if (msm_uport->rx.buffer_pending & FIFO_OVERRUN) {
@@ -1732,9 +1737,12 @@ static void msm_hs_start_tx_locked(struct uart_port *uport )
 	struct msm_hs_port *msm_uport = UARTDM_TO_MSM(uport);
 
 	if (msm_uport->clk_state != MSM_HS_CLK_ON) {
-		MSM_HS_WARN("%s: Failed.Clocks are OFF\n", __func__);
+		msm_uport->tx_pending = true;
+		MSM_HS_DBG("%s: Clock not on; tx pending clock on\n", __func__);
 		return;
 	}
+
+	msm_uport->tx_pending = false;
 	if ((msm_uport->tx.tx_ready_int_en == 0) &&
 		(msm_uport->tx.dma_in_flight == 0))
 			msm_hs_submit_tx_locked(uport);
@@ -1872,6 +1880,20 @@ static void msm_hs_sps_rx_callback(struct sps_event_notify *notify)
 		tasklet_schedule(&msm_uport->rx.tlet);
 		MSM_HS_DBG("%s(): Scheduled rx_tlet", __func__);
 	}
+}
+
+void msm_hs_set_wake_peer(struct uart_port *uport, wake_peer_fn wake_peer)
+{
+	struct msm_hs_port *msm_uport = UARTDM_TO_MSM(uport);
+	msm_uport->wake_peer = wake_peer;
+}
+
+static void msm_hs_wake_peer(struct uart_port *uport)
+{
+	struct msm_hs_port *msm_uport = UARTDM_TO_MSM(uport);
+
+	if (msm_uport->wake_peer)
+		msm_uport->wake_peer(uport);
 }
 
 /*
@@ -2032,6 +2054,32 @@ static int msm_hs_check_clock_off(struct uart_port *uport)
 			 * we disabled in request clock off
 			 */
 			msm_hs_enable_flow_control(uport);
+		}
+		/***************************************************
+		 a)sps connection can be closed in msm_hs_check_clock_off(the first
+		   time invoked).
+		 b)msm_hs_check_clock_off return 0 after send a clk_off_timer msg to
+		   close sps connection
+		 c)when clk_off_timer is timeout, hsuart_clock_off_work will be
+		   invoked, so msm_hs_check_clock_off is invoked for the second time
+		 d)if there is a data/command comes from stack now, uart circular buf
+		   won't be empty, that meas uart_circ_empty(tx_buf) will return false
+		 e)if uart_circ_empty(tx_buf) return fasle, msm_hs_check_clock_off only
+		   set msm_uport->clk_state to MSM_HS_CLK_ON. but the sps connection
+		   will not be opened any more.
+		 f)now if there a data/command from stack  again
+		   because the sps connection is still close, so the uart can't
+		   thansfer the command/data any more.
+		 so here open sps connection again
+		***************************************************/
+		MSM_HS_DBG("%s check whether need to reopen sps %d\n", __func__,
+				msm_uport->rx.flush);
+		if (msm_uport->rx.flush == FLUSH_SHUTDOWN) {
+			spin_unlock_irqrestore(&uport->lock, flags);
+			msm_hs_spsconnect_rx(uport);
+			spin_lock_irqsave(&uport->lock, flags);
+			MSM_HS_WARN("%s reopen spsconnect.\n", __func__);
+			msm_hs_start_rx_locked(uport);
 		}
 		spin_unlock_irqrestore(&uport->lock, flags);
 		mutex_unlock(&msm_uport->clk_mutex);
@@ -2514,10 +2562,10 @@ static void msm_hs_get_pinctrl_configs(struct uart_port *uport)
 		msm_uport->use_pinctrl = true;
 
 		set_state = pinctrl_lookup_state(msm_uport->pinctrl,
-						"hsuart_active");
+						PINCTRL_STATE_DEFAULT);
 		if (IS_ERR_OR_NULL(set_state)) {
 			dev_err(uport->dev,
-				"pinctrl lookup failed for hsuart_active");
+				"pinctrl lookup failed for default state");
 			goto pinctrl_fail;
 		}
 
@@ -2526,10 +2574,10 @@ static void msm_hs_get_pinctrl_configs(struct uart_port *uport)
 		msm_uport->gpio_state_active = set_state;
 
 		set_state = pinctrl_lookup_state(msm_uport->pinctrl,
-						"hsuart_sleep");
+						PINCTRL_STATE_SLEEP);
 		if (IS_ERR_OR_NULL(set_state)) {
 			dev_err(uport->dev,
-				"pinctrl lookup failed for hsuart_sleep");
+				"pinctrl lookup failed for sleep state");
 			goto pinctrl_fail;
 		}
 
@@ -3491,11 +3539,14 @@ static int msm_hs_runtime_resume(struct device *dev)
 						    platform_device, dev);
 	struct msm_hs_port *msm_uport = get_matching_hs_port(pdev);
 	int ret;
+	unsigned long flags;
 
+	MSM_HS_DBG("%s\n", __func__);
 	/* This check should not fail
 	 * During probe, we set uport->line to either pdev->id or userid */
 	if (msm_uport) {
 		msm_hs_request_clock_on(&msm_uport->uport);
+		msm_hs_set_mctrl(&msm_uport->uport, TIOCM_RTS);
 		if (msm_uport->use_pinctrl) {
 			ret = pinctrl_select_state(msm_uport->pinctrl,
 						msm_uport->gpio_state_active);
@@ -3503,6 +3554,15 @@ static int msm_hs_runtime_resume(struct device *dev)
 				MSM_HS_ERR("%s(): error select active state",
 					__func__);
 		}
+
+		msm_hs_clock_vote(msm_uport);
+		spin_lock_irqsave(&msm_uport->uport.lock, flags);
+		if (msm_uport->tx_pending) {
+			MSM_HS_DBG("%s sending pending tx\n", __func__);
+			msm_hs_start_tx_locked(&msm_uport->uport);
+		}
+		spin_unlock_irqrestore(&msm_uport->uport.lock, flags);
+		msm_hs_clock_unvote(msm_uport);
 	}
 	return 0;
 }
@@ -3514,9 +3574,11 @@ static int msm_hs_runtime_suspend(struct device *dev)
 	struct msm_hs_port *msm_uport = get_matching_hs_port(pdev);
 	int ret;
 
+	MSM_HS_DBG("%s\n", __func__);
 	/* This check should not fail
 	 * During probe, we set uport->line to either pdev->id or userid */
 	if (msm_uport) {
+		msm_hs_set_mctrl(&msm_uport->uport, 0);
 		msm_hs_request_clock_off(&msm_uport->uport);
 		if (msm_uport->use_pinctrl) {
 			ret = pinctrl_select_state(msm_uport->pinctrl,
@@ -3570,6 +3632,7 @@ static struct uart_ops msm_hs_ops = {
 	.config_port = msm_hs_config_port,
 	.flush_buffer = NULL,
 	.ioctl = msm_hs_ioctl,
+	.wake_peer = msm_hs_wake_peer,
 };
 
 module_init(msm_serial_hs_init);
